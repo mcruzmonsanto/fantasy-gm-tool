@@ -18,11 +18,23 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- SISTEMA DE ALIAS V4.1 ---
+# --- SISTEMA DE ALIAS CORREGIDO V4.5 ---
+# ¡LAL y LAC están ahora DIVORCIADOS!
 GRUPOS_EQUIPOS = [
-    ['PHI', 'PHL', '76ERS'], ['UTA', 'UTAH', 'UTH'], ['NY', 'NYK', 'NYA'], ['GS', 'GSW', 'GOL'],
-    ['NO', 'NOP', 'NOR'], ['SA', 'SAS', 'SAN'], ['PHO', 'PHX'], ['WAS', 'WSH'], ['CHA', 'CHO'],
-    ['BKN', 'BRK', 'BK'], ['LAL', 'LAC'],
+    ['PHI', 'PHL', '76ERS'], 
+    ['UTA', 'UTAH', 'UTH'], 
+    ['NY', 'NYK', 'NYA'], 
+    ['GS', 'GSW', 'GOL'],
+    ['NO', 'NOP', 'NOR'], 
+    ['SA', 'SAS', 'SAN'], 
+    ['PHO', 'PHX'], 
+    ['WAS', 'WSH'], 
+    ['CHA', 'CHO'],
+    ['BKN', 'BRK', 'BK'], 
+    # CORRECCIÓN: Grupos separados para LA
+    ['LAL'], 
+    ['LAC'],
+    # Resto de equipos
     ['TOR'], ['MEM'], ['MIA'], ['ORL'], ['MIN'], ['MIL'], ['DAL'], ['DEN'], ['HOU'], 
     ['DET'], ['IND'], ['CLE'], ['CHI'], ['ATL'], ['BOS'], ['OKC'], ['POR'], ['SAC']
 ]
@@ -30,15 +42,17 @@ GRUPOS_EQUIPOS = [
 def son_mismo_equipo(eq_roster, eq_api):
     r = eq_roster.strip().upper()
     a = eq_api.strip().upper()
+    
+    # Coincidencia exacta
     if r == a: return True
+    
+    # Búsqueda en grupos de familia
     for grupo in GRUPOS_EQUIPOS:
         if r in grupo and a in grupo: return True
+        
     return False
 
 def obtener_match_exacto(equipo_roster, lista_equipos_hoy_api):
-    """
-    Devuelve el nombre del equipo de la API con el que hizo match, o None.
-    """
     for eq_api in lista_equipos_hoy_api:
         if son_mismo_equipo(equipo_roster, eq_api): 
             return eq_api
@@ -163,7 +177,6 @@ if mi_matchup:
                 if p.lineupSlot == 'IR': continue
                 if excluir_out and p.injuryStatus == 'OUT': continue
                 
-                # Usamos la funcion que retorna el match exacto, si no es None, es True
                 if obtener_match_exacto(p.proTeam, equipos_juegan): 
                     disp_yo += 1
             
@@ -193,39 +206,27 @@ if mi_matchup:
         df_grid = pd.DataFrame([fila_yo, fila_rival, fila_diff], columns=["EQUIPO"] + dias_keys + ["TOTAL"])
         st.dataframe(df_grid, use_container_width=True)
 
-        # --- DEBUGGER V4.4 (DNA TEST) ---
-        with st.expander("🕵️ Lista de Asistencia (Ver quién sobra)"):
-            st.info("Selecciona el Domingo para ver por qué te cuenta 9 jugadores.")
+        # --- LISTA DE ASISTENCIA ---
+        with st.expander("🕵️ Lista de Asistencia (Debugger)"):
             dia_select = st.selectbox("Ver detalles del día:", dias_keys)
-            
             equipos_api = calendario[dia_select]
             st.caption(f"Equipos jugando (API): {', '.join(equipos_api)}")
             
             lista_activos = []
             for p in mi_equipo_obj.roster:
                 if p.lineupSlot == 'IR': continue
-                
                 match_team = obtener_match_exacto(p.proTeam, equipos_api)
                 es_out = (p.injuryStatus == 'OUT')
-                
                 contado = False
                 if match_team:
                     if excluir_out and es_out:
-                        contado = False
-                        match_info = f"Tiene partido ({match_team}) pero está OUT"
+                        contado = False; match_info = f"Tiene partido ({match_team}) pero está OUT"
                     else:
-                        contado = True
-                        match_info = f"MATCH: {p.proTeam} == {match_team}"
+                        contado = True; match_info = f"MATCH: {p.proTeam} == {match_team}"
                 else:
                     match_info = "-"
-                
-                lista_activos.append({
-                    "Jugador": p.name, 
-                    "Equipo": p.proTeam,
-                    "Contado?": "✅ SÍ" if contado else "❌ NO",
-                    "Detalle": match_info
-                })
-            
+                lista_activos.append({"Jugador": p.name, "Equipo": p.proTeam, "Salud": p.injuryStatus,
+                                      "Contado?": "✅ SÍ" if contado else "❌ NO", "Detalle": match_info})
             st.dataframe(pd.DataFrame(lista_activos).style.applymap(lambda v: 'color: green' if 'SÍ' in v else 'color: gray', subset=['Contado?']))
 
 # 2. MATCHUP & 3. VERDUGO
@@ -301,4 +302,4 @@ if st.button("🔎 Buscar Joyas"):
             except: st.dataframe(df_w)
         else: st.error("Sin resultados.")
 
-st.caption("🚀 Fantasy GM Architect v4.4 | DNA Test Enabled")
+st.caption("🚀 Fantasy GM Architect v4.5 | LA Separation Fix")
