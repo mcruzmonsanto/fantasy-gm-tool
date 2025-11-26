@@ -3,8 +3,7 @@ import pandas as pd
 import requests
 import json
 from datetime import datetime, timedelta
-import sys
-import os
+import xml.etree.ElementTree as ET
 
 # --- 1. CONFIGURACIÓN Y CONEXIÓN ---
 from src.conectar import obtener_liga
@@ -17,21 +16,24 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# --- 2. ESTILOS VISUALES ---
+# --- 2. ESTILOS VISUALES (CSS AJUSTADO) ---
 st.markdown("""
 <style>
-    .block-container {padding-top: 2rem; padding-bottom: 4rem;}
+    /* AUMENTO MASIVO DE MARGEN SUPERIOR PARA MÓVIL */
+    .block-container {padding-top: 6rem; padding-bottom: 5rem;}
+    
     .stDataFrame {border: 1px solid #2b2b2b; border-radius: 5px;}
-    .team-name {font-size: 1.1rem; font-weight: 700; text-align: center; margin-bottom: 0;}
-    .vs-tag {font-size: 0.9rem; color: #ff4b4b; text-align: center; font-weight: 800; margin-top: 5px;}
-    .league-tag {font-size: 0.75rem; color: #888; text-align: center; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px;}
+    .team-name {font-size: 1.2rem; font-weight: 800; text-align: center; margin-bottom: 0; line-height: 1.2;}
+    .vs-tag {font-size: 1rem; color: #ff4b4b; text-align: center; font-weight: 900; margin-top: 5px;}
+    .league-tag {font-size: 0.8rem; color: #aaa; text-align: center; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 15px;}
+    
     .metric-box {
         background-color: #1e1e1e; border: 1px solid #333; border-radius: 8px; 
-        padding: 15px; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        padding: 10px; text-align: center; margin-bottom: 10px;
     }
-    .win-val {color: #00ff00; font-size: 1.5rem; font-weight: bold;}
-    .lose-val {color: #ff4b4b; font-size: 1.5rem; font-weight: bold;}
-    .label-txt {color: #ccc; font-size: 0.85rem;}
+    .win-val {color: #00ff00; font-size: 1.4rem; font-weight: bold;}
+    .lose-val {color: #ff4b4b; font-size: 1.4rem; font-weight: bold;}
+    .label-txt {color: #ccc; font-size: 0.8rem; text-transform: uppercase;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -40,18 +42,17 @@ st.markdown("""
 GRUPOS_EQUIPOS = [
     ['PHI', 'PHL', '76ERS'], ['UTA', 'UTAH', 'UTH'], ['NY', 'NYK', 'NYA'], ['GS', 'GSW', 'GOL'],
     ['NO', 'NOP', 'NOR'], ['SA', 'SAS', 'SAN'], ['PHO', 'PHX'], ['WAS', 'WSH'], ['CHA', 'CHO'],
-    ['BKN', 'BRK', 'BK'], ['LAL', 'LAC'], 
+    ['BKN', 'BRK', 'BK'], ['LAL'], ['LAC'], 
     ['TOR'], ['MEM'], ['MIA'], ['ORL'], ['MIN'], ['MIL'], ['DAL'], ['DEN'], ['HOU'], 
     ['DET'], ['IND'], ['CLE'], ['CHI'], ['ATL'], ['BOS'], ['OKC'], ['POR'], ['SAC']
 ]
 
 def normalizar_equipo(abrev):
-    # Convierte cualquier variante (SA, SAN) a la estándar del grupo (usamos la 2da posición si existe, o la 1ra)
-    # Para simplificar: Iteramos y devolvemos el PRIMER elemento del grupo como estándar, o el mismo si no encuentra
+    """Convierte abreviatura a estándar para coincidir con API SOS"""
     s = str(abrev).strip().upper()
     for g in GRUPOS_EQUIPOS:
         if s in g:
-            # Preferimos las versiones de 3 letras estándar NBA si es posible
+            # Retornamos el elemento más largo (generalmente el de 3 letras) o el primero
             for candidato in g:
                 if len(candidato) == 3 and candidato not in ['UTH', 'PHL', 'NYA', 'GOL', 'NOR', 'SAN']:
                     return candidato
@@ -100,34 +101,32 @@ def get_data_semanal():
 
 @st.cache_data(ttl=21600)
 def get_sos_map():
-    """Devuelve mapa normalizado de victorias {LAL: 0.55, SAS: 0.20...}"""
+    """Obtiene mapa de Win% normalizando claves"""
     try:
         d = requests.get("http://site.api.espn.com/apis/site/v2/sports/basketball/nba/standings", timeout=3).json()
         sos = {}
         for c in d.get('children', []):
             for team in c.get('standings', {}).get('entries', []):
                 raw_abbr = team['team']['abbreviation']
-                norm_abbr = normalizar_equipo(raw_abbr) # Normalizamos la clave
+                norm_abbr = normalizar_equipo(raw_abbr)
                 for s in team.get('stats', []):
                     if s.get('name') == 'winPercent': 
-                        sos[norm_abbr] = s.get('value', 0.5)
-                        # Guardamos también la raw por si acaso
-                        sos[raw_abbr] = s.get('value', 0.5)
+                        val = s.get('value', 0.5)
+                        sos[norm_abbr] = val
+                        sos[raw_abbr] = val # Guardamos ambas por seguridad
                         break
         return sos
     except: return {}
 
 def get_sos_icon(opponent_raw, sos_map):
-    if not opponent_raw: return ""
-    # Normalizamos el rival antes de buscar en el mapa (SA -> SAS)
-    opp_norm = normalizar_equipo(opponent_raw)
+    if not opponent_raw: return "⚪"
+    # Normalizamos antes de buscar
+    opp = normalizar_equipo(opponent_raw)
+    win_pct = sos_map.get(opp, sos_map.get(opponent_raw, 0.5))
     
-    win_pct = sos_map.get(opp_norm, 0.5)
-    
-    # Lógica Semáforo
-    if win_pct >= 0.60: return "🔴" # Rival difícil (Top tier)
-    if win_pct <= 0.40: return "🟢" # Rival fácil (Tanking)
-    return "⚪" # Rival promedio
+    if win_pct >= 0.60: return "🔴" 
+    if win_pct <= 0.40: return "🟢" 
+    return "⚪"
 
 def get_ownership(liga):
     try:
@@ -232,7 +231,7 @@ with st.expander("📅 Planificación Semanal (Grid)", expanded=True):
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["🔥 Hoy", "⚔️ Matchup", "🪓 Cortes", "💎 Waiver", "⚖️ Trade", "🕵️ Intel"])
 necesidades = []
 
-# 1. FACE-OFF
+# 1. FACE-OFF (REPARADO: SEMÁFORO + BOTÓN RESCATE)
 with tab1:
     sos_map = get_sos_map()
     def get_power(roster):
@@ -260,7 +259,53 @@ with tab1:
         st.markdown(f"<div class='metric-box'><div class='label-txt'>RIVAL</div><div class='{'win-val' if diff_p<0 else 'lose-val'}'>{round(rv_p,1)}</div></div>", unsafe_allow_html=True)
         if rv_l: st.dataframe(pd.DataFrame(rv_l), use_container_width=True, hide_index=True)
 
-    if diff_p < 0: st.warning(f"Pierdes por {abs(round(diff_p,1))} FP. ¡Busca refuerzos!")
+    st.divider()
+    
+    # --- BOTÓN DE RESCATE (RESTAURADO) ---
+    if diff_p < 0:
+        brecha = abs(diff_p)
+        st.error(f"⚠️ PROYECCIÓN NEGATIVA: Te faltan {round(brecha,1)} Puntos Fantasy.")
+        
+        if st.button("🚑 BUSCAR JUGADOR RESCATE (WAIVER)"):
+            with st.spinner("Escaneando mercado de HOY..."):
+                fa = liga.free_agents(size=150)
+                rescate = []
+                for p in fa:
+                    # 1. Filtros Básicos
+                    if getattr(p, 'acquisitionType', []) or p.injuryStatus == 'OUT': continue
+                    
+                    # 2. Filtro Calendario (Tiene que jugar HOY)
+                    mt = check_match(p.proTeam, hoy_eqs)
+                    if not mt: continue
+                    
+                    # 3. Score
+                    sc, s = calc_score(p, config, season_id)
+                    
+                    # 4. ¿Cubre la brecha?
+                    diff_impacto = sc - brecha
+                    
+                    # Mostramos solo si es decente (>15)
+                    if sc > 15:
+                        # Semáforo Rival
+                        opp = hoy_rivs.get(mt, "")
+                        si = get_sos_icon(opp, sos_map)
+                        
+                        rescate.append({
+                            'Salvador': p.name,
+                            'Eq': p.proTeam,
+                            'VS': f"{si} {opp}",
+                            'Proyección': round(sc,1),
+                            'Impacto': f"{'+' if diff_impacto > 0 else ''}{round(diff_impacto,1)}"
+                        })
+                
+                if rescate:
+                    df_r = pd.DataFrame(rescate).sort_values('Proyección', ascending=False).head(5)
+                    st.success("¡Opciones encontradas!")
+                    st.dataframe(df_r, use_container_width=True, hide_index=True)
+                else:
+                    st.warning("No hay agentes libres hoy que cubran esa cantidad de puntos.")
+    else:
+        st.success(f"🚀 Vas ganando por +{round(diff_p,1)} FP. ¡Mantén la alineación!")
 
 # 2. MATCHUP
 with tab2:
@@ -366,7 +411,7 @@ with tab5:
                 deltas.append({'Cat': c, 'Antes': round(vo,1), 'Ahora': round(vi,1), 'Delta': f"{d:+.1f} {ic}"})
             st.table(pd.DataFrame(deltas))
 
-# 6. INTEL (SEGURO Y SIN ERRORES)
+# 6. INTEL
 with tab6:
     st.subheader("🕵️ Actividad")
     try:
@@ -374,14 +419,12 @@ with tab6:
         if not df_act.empty and 'Error' not in df_act.columns: st.dataframe(df_act, use_container_width=True, hide_index=True)
         else: st.info("Sin movimientos recientes.")
     except: pass
-    
     st.divider()
     st.subheader("📰 Noticias")
-    # Links estáticos a prueba de fallos
     c_n1, c_n2 = st.columns(2)
     with c_n1:
-        st.link_button("🌐 Ver en Rotoworld (NBC)", "https://www.rotowire.com/basketball/news.php")
+        st.link_button("🌐 Ver en Rotoworld", "https://www.rotowire.com/basketball/news.php")
     with c_n2:
-        st.link_button("🌐 Ver en ESPN NBA", "https://www.espn.com/nba/news")
+        st.link_button("🌐 Ver en ESPN", "https://www.espn.com/nba/news")
 
-st.caption("🚀 Fantasy GM Architect v9.0 | Final Stability Edition")
+st.caption("🚀 Fantasy GM Architect v9.1 | Rescue Button Restored")
