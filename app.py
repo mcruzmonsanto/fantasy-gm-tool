@@ -20,7 +20,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- MAPEO BLINDADO ---
+# --- MAPEO UNIVERSAL DE EQUIPOS NBA ---
+# La clave es la variante rara, el valor es el estándar de 3 letras
 MAPEO_EQUIPOS = {
     'WSH': 'WAS', 'WAS': 'WAS',
     'UTAH': 'UTA', 'UTA': 'UTA', 'UTH': 'UTA',
@@ -29,18 +30,38 @@ MAPEO_EQUIPOS = {
     'SA': 'SAS', 'SAS': 'SAS', 'SAN': 'SAS',
     'PHO': 'PHX', 'PHX': 'PHX',
     'GS': 'GSW', 'GSW': 'GSW',
-    'LAC': 'LAC', 'LAL': 'LAL' # Aseguramos Los Angeles
+    'LAC': 'LAC', 'LAL': 'LAL',
+    'BKN': 'BKN', 'BRK': 'BKN', 'BK': 'BKN',
+    'CHA': 'CHA', 'CHI': 'CHI', 'CLE': 'CLE', 'DAL': 'DAL',
+    'DEN': 'DEN', 'DET': 'DET', 'HOU': 'HOU', 'IND': 'IND',
+    'MEM': 'MEM', 'MIA': 'MIA', 'MIL': 'MIL', 'MIN': 'MIN',
+    'OKC': 'OKC', 'ORL': 'ORL', 'PHI': 'PHI', 'POR': 'POR',
+    'SAC': 'SAC', 'TOR': 'TOR', 'ATL': 'ATL', 'BOS': 'BOS'
 }
 
-def normalizar_equipo(abrev):
-    # Normalizamos a mayúsculas y buscamos
-    return MAPEO_EQUIPOS.get(abrev.upper(), abrev.upper())
-
-def verificar_juego_hoy(equipo_roster, lista_equipos_hoy):
-    # 1. Intento Directo
-    if equipo_roster in lista_equipos_hoy: return True
-    # 2. Intento Normalizado
-    if normalizar_equipo(equipo_roster) in lista_equipos_hoy: return True
+def verificar_juego_hoy(equipo_roster, lista_equipos_hoy_raw):
+    """
+    Compara el equipo del jugador con la lista del calendario intentando todas las variantes.
+    """
+    # Normalizamos todo a mayúsculas
+    eq_roster = equipo_roster.upper()
+    lista_hoy = [x.upper() for x in lista_equipos_hoy_raw]
+    
+    # 1. Coincidencia Exacta
+    if eq_roster in lista_hoy: return True
+    
+    # 2. Buscar traducción del Roster -> Calendario
+    traduccion = MAPEO_EQUIPOS.get(eq_roster)
+    if traduccion and traduccion in lista_hoy: return True
+    
+    # 3. Buscar traducción inversa (¿El calendario tiene la versión rara?)
+    # Ej: Roster dice 'UTA', Calendario dice 'UTAH'
+    for calendario_eq in lista_hoy:
+        # Si la versión traducida del calendario coincide con mi roster
+        trad_cal = MAPEO_EQUIPOS.get(calendario_eq, calendario_eq)
+        if trad_cal == eq_roster: return True
+        if traduccion and trad_cal == traduccion: return True
+        
     return False
 
 # --- FUNCIONES ---
@@ -136,7 +157,7 @@ for m in box_scores:
     if PALABRA_CLAVE.lower() in m.home_team.team_name.lower(): mi_matchup = m; soy_home = True; break
     elif PALABRA_CLAVE.lower() in m.away_team.team_name.lower(): mi_matchup = m; soy_home = False; break
 
-# 1. GRID SEMANAL (LÓGICA V3.7 - CORREGIDA)
+# 1. GRID SEMANAL (V3.8)
 st.header(f"📅 Planificación Semanal (Límite: {limit_slots})")
 if mi_matchup:
     with st.spinner("Analizando Calendario..."):
@@ -151,14 +172,14 @@ if mi_matchup:
         for dia in dias_keys:
             equipos_juegan = calendario[dia]
             
-            # --- CORRECCIÓN: SOLO FILTRAMOS IR, NO INJURY STATUS (PARA PROYECCIÓN FUTURA) ---
+            # YO: Contamos todo jugador activo (ignora OUT, solo respeta IR)
             disp_yo = 0
             for p in mi_equipo_obj.roster:
-                # Si está en IR, no cuenta. Si está OUT pero en roster activo, SÍ cuenta para el futuro.
-                if p.lineupSlot != 'IR':
+                if p.lineupSlot != 'IR': 
                     if verificar_juego_hoy(p.proTeam, equipos_juegan):
                         disp_yo += 1
             
+            # RIVAL: Lo mismo
             disp_riv = 0
             for p in rival_obj.roster:
                 if p.lineupSlot != 'IR':
@@ -184,13 +205,12 @@ if mi_matchup:
         df_grid = pd.DataFrame([fila_yo, fila_rival, fila_diff], columns=["EQUIPO"] + dias_keys + ["TOTAL"])
         st.dataframe(df_grid, use_container_width=True)
 
-        # DEBUGGER (Solo visible si despliegas)
-        with st.expander("🕵️ Debugger de Roster"):
-            st.write(f"Total roster: {len(mi_equipo_obj.roster)}")
-            data_db = []
-            for p in mi_equipo_obj.roster:
-                data_db.append([p.name, p.proTeam, p.injuryStatus, p.lineupSlot])
-            st.dataframe(pd.DataFrame(data_db, columns=['Nombre','Eq','Status','Slot']))
+        # --- AUDITORÍA DE CALENDARIO ---
+        with st.expander("🕵️ Auditoría de Calendario (Ver datos crudos)"):
+            st.write("Si los números no cuadran, verifica qué equipos detecta la API para cada día:")
+            # Mostramos la lista de equipos para cada día
+            for d, teams in calendario.items():
+                st.text(f"{d}: {', '.join(teams)}")
 
 # 2. MATCHUP & 3. VERDUGO
 st.markdown("---")
@@ -276,4 +296,4 @@ if st.button("🔎 Buscar Joyas"):
             except: st.dataframe(df_w)
         else: st.error("Sin resultados.")
 
-st.caption("🚀 Fantasy GM Architect v3.7 | Planning Grid Fixed")
+st.caption("🚀 Fantasy GM Architect v3.8 | The Universal Dictionary")
