@@ -17,24 +17,22 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# CSS AJUSTADO PARA MÓVIL (Padding extra arriba para que no se corte)
+# CSS AJUSTADO PARA MÓVIL
 st.markdown("""
 <style>
     .stDataFrame {border: 1px solid #333;}
     .block-container {
-        padding-top: 3rem; /* Aumentado para evitar cortes en móviles */
+        padding-top: 3rem;
         padding-bottom: 5rem;
     } 
     div[data-testid="stExpander"] details summary p {font-weight: bold;}
-    
-    /* Estilo de Marcador VS */
     .team-name {font-size: 18px; font-weight: bold; text-align: center;}
     .vs-tag {font-size: 14px; color: #FF4B4B; text-align: center; font-weight: bold;}
     .league-tag {font-size: 12px; color: #888; text-align: center; margin-bottom: 5px;}
 </style>
 """, unsafe_allow_html=True)
 
-# --- 2. LÓGICA DE DATOS (Mismo motor v5.0) ---
+# --- 2. LÓGICA DE DATOS ---
 
 GRUPOS_EQUIPOS = [
     ['PHI', 'PHL', '76ERS'], ['UTA', 'UTAH', 'UTH'], ['NY', 'NYK', 'NYA'], ['GS', 'GSW', 'GOL'],
@@ -129,18 +127,13 @@ if not matchup: st.warning("No hay matchup activo."); st.stop()
 mi_equipo = matchup.home_team if soy_home else matchup.away_team
 rival = matchup.away_team if soy_home else matchup.home_team
 
-# --- CABECERA SCOREBOARD (NUEVO DISEÑO) ---
+# --- CABECERA ---
 st.markdown(f"<div class='league-tag'>{nombre_liga}</div>", unsafe_allow_html=True)
-
 col_h1, col_h2, col_h3 = st.columns([5, 1, 5])
-with col_h1:
-    st.markdown(f"<div class='team-name'>{mi_equipo.team_name}</div>", unsafe_allow_html=True)
-with col_h2:
-    st.markdown("<div class='vs-tag'>VS</div>", unsafe_allow_html=True)
-with col_h3:
-    st.markdown(f"<div class='team-name'>{rival.team_name}</div>", unsafe_allow_html=True)
-
-st.write("") # Espacio
+with col_h1: st.markdown(f"<div class='team-name'>{mi_equipo.team_name}</div>", unsafe_allow_html=True)
+with col_h2: st.markdown("<div class='vs-tag'>VS</div>", unsafe_allow_html=True)
+with col_h3: st.markdown(f"<div class='team-name'>{rival.team_name}</div>", unsafe_allow_html=True)
+st.write("")
 
 # --- MÓDULO 1: GRID SEMANAL ---
 with st.expander("📅 Planificación Semanal (Grid)", expanded=True):
@@ -151,10 +144,8 @@ with st.expander("📅 Planificación Semanal (Grid)", expanded=True):
     for dia, equipos_api in calendario.items():
         cy = sum(1 for p in mi_equipo.roster if p.lineupSlot != 'IR' and (not excluir_out or p.injuryStatus != 'OUT') and check_juego_hoy(p.proTeam, equipos_api))
         cr = sum(1 for p in rival.roster if p.lineupSlot != 'IR' and (not excluir_out or p.injuryStatus != 'OUT') and check_juego_hoy(p.proTeam, equipos_api))
-        
         uy, ur = min(cy, limit_slots), min(cr, limit_slots)
         rows["YO"].append(uy); rows["RIVAL"].append(ur)
-        
         diff = uy - ur
         icon = "✅" if diff > 0 else "⚠️" if diff < 0 else "="
         rows["DIFF"].append(f"{diff} {icon}")
@@ -163,7 +154,6 @@ with st.expander("📅 Planificación Semanal (Grid)", expanded=True):
     rows["YO"].append(tot_y); rows["RIVAL"].append(tot_r)
     dt = tot_y - tot_r
     rows["DIFF"].append(f"{dt} {'🔥' if dt > 0 else '💀'}")
-    
     st.dataframe(pd.DataFrame(rows, index=list(calendario.keys()) + ["TOTAL"]).T, use_container_width=True)
 
 # --- MÓDULO 2: PESTAÑAS TÁCTICAS ---
@@ -186,7 +176,6 @@ with tab1:
         fmt_m = f"{m:.3f}" if c in ['FG%','FT%'] else f"{m:.0f}"
         fmt_r = f"{r:.3f}" if c in ['FG%','FT%'] else f"{r:.0f}"
         data_m.append([c, fmt_m, fmt_r, f"{diff:.2f}", stt])
-        
     st.info(f"🏆 Marcador: {w}-{l}-{t} | 🎯 Faltan: {', '.join(necesidades)}")
     st.dataframe(pd.DataFrame(data_m, columns=['Cat','Yo','Rival','Diff','W']), use_container_width=True, hide_index=True)
 
@@ -201,13 +190,17 @@ with tab2:
         roster_data.append({'Jugador': p.name, 'St': icon, 'Pos': p.lineupSlot, 'Score': round(score,1), 'Min': round(s.get('MIN',0),1)})
     st.dataframe(pd.DataFrame(roster_data).sort_values('Score'), use_container_width=True, hide_index=True)
 
-# TAB 3: WAIVER KING
+# TAB 3: WAIVER KING (MONEYBALL EDITION)
 with tab3:
     c_filt1, c_filt2 = st.columns(2)
     min_mins = c_filt1.number_input("Minutos >", 10, 40, 22)
     solo_hoy = c_filt2.checkbox("Juegan HOY", True)
+    
+    # NUEVO: Selector de Orden
+    ordenar_por = st.selectbox("Ordenar por:", ["Score (Rendimiento)", "Trend (Hype)", "FPPM (Eficiencia)"])
+    
     if st.button("🔎 Escanear Mercado"):
-        with st.spinner("Buscando joyas..."):
+        with st.spinner("Analizando Eficiencia y Hype..."):
             eq_hoy = []
             if solo_hoy:
                 try:
@@ -219,6 +212,7 @@ with tab3:
             own_data = get_ownership_data(liga)
             fa = liga.free_agents(size=150)
             w_list = []
+            
             for p in fa:
                 if getattr(p, 'acquisitionType', []) or p.injuryStatus == 'OUT': continue
                 if solo_hoy and not check_juego_hoy(p.proTeam, eq_hoy): continue
@@ -226,10 +220,13 @@ with tab3:
                 if not s: continue
                 mpg = s.get('MIN', 0)
                 if mpg < min_mins: continue
+                
+                # Metrics Moneyball
                 od = own_data.get(p.playerId, {})
                 pch = od.get('percentChange', 0.0)
                 pop = od.get('percentOwned', 0.0)
                 ti = "🔥🔥" if pch>2 else "🔥" if pch>0.5 else "📈" if pch>0 else "❄️"
+                
                 sc = mpg * 0.5
                 cats_hit = []
                 if necesidades:
@@ -238,9 +235,43 @@ with tab3:
                         if v > 0: sc += v * 10; cats_hit.append(c)
                 else: sc += s.get('PTS',0) + s.get('REB',0)*1.2
                 if pch > 1.5: sc += 15
-                w_list.append({'Nombre': p.name, 'Eq': p.proTeam, 'Trend': f"{ti} {pch:+.1f}%", 
-                    'Min': round(mpg,1), 'Score': round(sc,1), 'Aporta': ",".join(cats_hit) if cats_hit else "-"})
-            if w_list: st.dataframe(pd.DataFrame(w_list).sort_values('Score', ascending=False).head(15), use_container_width=True, hide_index=True)
-            else: st.info("Nadie cumple los filtros hoy.")
+                
+                # CALCULO FPPM (Puntos Fantasy por Minuto)
+                # Usamos un score estandarizado para comparar eficiencia
+                std_score = s.get('PTS',0) + s.get('REB',0)*1.2 + s.get('AST',0)*1.5 + s.get('STL',0)*2 + s.get('BLK',0)*2
+                fppm = std_score / mpg if mpg > 0 else 0
+                
+                # Icono de Eficiencia
+                eff_icon = ""
+                if fppm > 1.1: eff_icon = "💎" # Joya oculta
+                
+                w_list.append({
+                    'Nombre': p.name, 'Eq': p.proTeam, 
+                    'Trend': f"{ti} {pch:+.1f}%", 
+                    'Min': round(mpg,1), 
+                    'Score': round(sc,1), 
+                    'FPPM': f"{eff_icon} {fppm:.2f}", # Nueva Columna
+                    'Aporta': ",".join(cats_hit) if cats_hit else "-",
+                    # Columnas ocultas para ordenar
+                    '_trend': pch,
+                    '_fppm': fppm
+                })
+            
+            if w_list:
+                df_w = pd.DataFrame(w_list)
+                
+                # Lógica de Ordenamiento Dinámico
+                if ordenar_por == "Trend (Hype)":
+                    df_w = df_w.sort_values('_trend', ascending=False)
+                elif ordenar_por == "FPPM (Eficiencia)":
+                    df_w = df_w.sort_values('_fppm', ascending=False)
+                else:
+                    df_w = df_w.sort_values('Score', ascending=False)
+                
+                # Limpiamos columnas de ordenamiento antes de mostrar
+                cols_mostrar = ['Nombre', 'Eq', 'Trend', 'FPPM', 'Min', 'Score', 'Aporta']
+                st.dataframe(df_w[cols_mostrar].head(20), use_container_width=True, hide_index=True)
+            else:
+                st.info("Nadie cumple los filtros hoy.")
 
-st.caption("🚀 Fantasy GM Architect v5.1 | UI Facelift")
+st.caption("🚀 Fantasy GM Architect v5.2 | Moneyball Module")
