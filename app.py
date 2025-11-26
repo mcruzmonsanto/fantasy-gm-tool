@@ -5,7 +5,7 @@ import json
 from datetime import datetime, timedelta
 import sys
 import os
-import xml.etree.ElementTree as ET # Para noticias RSS
+import xml.etree.ElementTree as ET
 
 # --- 1. CONFIGURACIÓN INICIAL ---
 from src.conectar import obtener_liga
@@ -18,7 +18,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# CSS AJUSTADO (Estilo Noticias)
+# CSS
 st.markdown("""
 <style>
     .stDataFrame {border: 1px solid #333;}
@@ -26,10 +26,9 @@ st.markdown("""
     .team-name {font-size: 18px; font-weight: bold; text-align: center;}
     .vs-tag {font-size: 14px; color: #FF4B4B; text-align: center; font-weight: bold;}
     .league-tag {font-size: 12px; color: #888; text-align: center; margin-bottom: 5px;}
-    /* Estilo Noticias */
-    .news-card {background-color: #262730; padding: 10px; border-radius: 5px; margin-bottom: 10px; border-left: 4px solid #FF4B4B;}
-    .news-title {font-weight: bold; color: #FFF; font-size: 14px;}
-    .news-date {color: #888; font-size: 11px;}
+    .news-card {background-color: #262730; padding: 12px; border-radius: 8px; margin-bottom: 10px; border-left: 4px solid #FF4B4B;}
+    .news-title {font-weight: bold; color: #FFF; font-size: 15px; text-decoration: none;}
+    .news-date {color: #BBB; font-size: 12px; margin-top: 4px;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -87,42 +86,59 @@ def get_ownership_data(liga):
     except: return {}
 
 def get_nba_news():
-    """Descarga noticias RSS de ESPN NBA"""
+    """Descarga noticias RSS de ESPN NBA con Headers Anti-Bot"""
     try:
         url = "https://www.espn.com/espn/rss/nba/news"
-        response = requests.get(url)
+        # DISFRAZAMOS LA PETICIÓN COMO UN NAVEGADOR
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        response = requests.get(url, headers=headers, timeout=5)
         root = ET.fromstring(response.content)
         news = []
-        for item in root.findall('./channel/item')[:8]: # Top 8 noticias
+        for item in root.findall('./channel/item')[:10]: 
             news.append({
                 'title': item.find('title').text,
                 'link': item.find('link').text,
                 'pubDate': item.find('pubDate').text
             })
         return news
-    except: return []
+    except Exception as e:
+        print(f"Error News: {e}")
+        return []
 
 def get_league_activity(liga):
-    """Obtiene transacciones recientes de la liga"""
+    """Obtiene transacciones recientes con manejo de errores robusto"""
     try:
-        # espn_api tiene recent_activity()
-        activity = liga.recent_activity(size=15)
+        # Solicitamos 20 movimientos
+        activity = liga.recent_activity(size=20)
         logs = []
         for act in activity:
-            # act.actions es una lista de tuplas/objetos (team, type, player)
-            # La estructura exacta varía según versión, intentamos parsear seguro
-            if hasattr(act, 'actions'):
-                for action in act.actions:
-                    # action suele ser (Team(Object), 'DROP', 'PlayerName')
-                    team_obj, tipo, player_name = action
-                    logs.append({
-                        'Equipo': team_obj.team_name,
-                        'Acción': tipo,
-                        'Jugador': player_name,
-                        'Fecha': datetime.fromtimestamp(act.date/1000).strftime('%d/%m %H:%M')
-                    })
+            # Intentamos leer la acción
+            try:
+                if hasattr(act, 'actions'):
+                    for action in act.actions:
+                        # (TeamObj, Type, PlayerName, etc)
+                        team_obj = action[0]
+                        tipo = action[1]
+                        player_name = action[2]
+                        
+                        # Formateo de fecha
+                        fecha_obj = datetime.fromtimestamp(act.date/1000)
+                        fecha_fmt = fecha_obj.strftime('%d/%m %H:%M')
+                        
+                        logs.append({
+                            'Fecha': fecha_fmt,
+                            'Equipo': team_obj.team_name,
+                            'Acción': tipo,
+                            'Jugador': player_name
+                        })
+            except:
+                continue # Saltamos acciones corruptas
         return pd.DataFrame(logs)
-    except: return pd.DataFrame()
+    except Exception as e:
+        # Retornamos el error como dataframe para verlo en pantalla si falla
+        return pd.DataFrame([{"Error": str(e)}])
 
 def calcular_stats_matchup(lineup):
     totales = {k: 0 for k in ['PTS','REB','AST','STL','BLK','3PTM','TO','DD','FGM','FGA','FTM','FTA']}
@@ -141,7 +157,7 @@ def calcular_stats_matchup(lineup):
     if totales['FTA'] > 0: totales['FT%'] = totales['FTM'] / totales['FTA']
     return totales
 
-# --- 3. INTERFAZ DE USUARIO (UI) ---
+# --- 3. INTERFAZ DE USUARIO ---
 
 with st.sidebar:
     st.header("⚙️ Configuración")
@@ -174,12 +190,11 @@ with col_h2: st.markdown("<div class='vs-tag'>VS</div>", unsafe_allow_html=True)
 with col_h3: st.markdown(f"<div class='team-name'>{rival.team_name}</div>", unsafe_allow_html=True)
 st.write("")
 
-# --- MÓDULO 1: GRID SEMANAL ---
+# --- GRID ---
 with st.expander("📅 Planificación Semanal (Grid)", expanded=True):
     calendario = get_calendario_semanal()
     rows = {"YO": [], "RIVAL": [], "DIFF": []}
     tot_y, tot_r = 0, 0
-    
     for dia, equipos_api in calendario.items():
         cy = sum(1 for p in mi_equipo.roster if p.lineupSlot != 'IR' and (not excluir_out or p.injuryStatus != 'OUT') and check_juego_hoy(p.proTeam, equipos_api))
         cr = sum(1 for p in rival.roster if p.lineupSlot != 'IR' and (not excluir_out or p.injuryStatus != 'OUT') and check_juego_hoy(p.proTeam, equipos_api))
@@ -189,17 +204,15 @@ with st.expander("📅 Planificación Semanal (Grid)", expanded=True):
         icon = "✅" if diff > 0 else "⚠️" if diff < 0 else "="
         rows["DIFF"].append(f"{diff} {icon}")
         tot_y += uy; tot_r += ur
-        
     rows["YO"].append(tot_y); rows["RIVAL"].append(tot_r)
     dt = tot_y - tot_r
     rows["DIFF"].append(f"{dt} {'🔥' if dt > 0 else '💀'}")
     st.dataframe(pd.DataFrame(rows, index=list(calendario.keys()) + ["TOTAL"]).T, use_container_width=True)
 
-# --- MÓDULO 2: PESTAÑAS TÁCTICAS ---
+# --- PESTAÑAS ---
 tab1, tab2, tab3, tab4 = st.tabs(["⚔️ Matchup", "🪓 Cortes", "💎 Waiver", "🕵️ Espía"])
 necesidades = []
 
-# TAB 1: MATCHUP
 with tab1:
     ms = calcular_stats_matchup(matchup.home_lineup if soy_home else matchup.away_lineup)
     rs = calcular_stats_matchup(matchup.away_lineup if soy_home else matchup.home_lineup)
@@ -218,7 +231,6 @@ with tab1:
     st.info(f"🏆 Marcador: {w}-{l}-{t} | 🎯 Faltan: {', '.join(necesidades)}")
     st.dataframe(pd.DataFrame(data_m, columns=['Cat','Yo','Rival','Diff','W']), use_container_width=True, hide_index=True)
 
-# TAB 2: EL VERDUGO
 with tab2:
     roster_data = []
     for p in mi_equipo.roster:
@@ -229,7 +241,6 @@ with tab2:
         roster_data.append({'Jugador': p.name, 'St': icon, 'Pos': p.lineupSlot, 'Score': round(score,1), 'Min': round(s.get('MIN',0),1)})
     st.dataframe(pd.DataFrame(roster_data).sort_values('Score'), use_container_width=True, hide_index=True)
 
-# TAB 3: WAIVER KING
 with tab3:
     c_filt1, c_filt2 = st.columns(2)
     min_mins = c_filt1.number_input("Minutos >", 10, 40, 22)
@@ -260,7 +271,6 @@ with tab3:
                 pch = od.get('percentChange', 0.0)
                 pop = od.get('percentOwned', 0.0)
                 ti = "🔥🔥" if pch>2 else "🔥" if pch>0.5 else "📈" if pch>0 else "❄️"
-                
                 sc = mpg * 0.5
                 cats_hit = []
                 if necesidades:
@@ -269,11 +279,9 @@ with tab3:
                         if v > 0: sc += v * 10; cats_hit.append(c)
                 else: sc += s.get('PTS',0) + s.get('REB',0)*1.2
                 if pch > 1.5: sc += 15
-                
                 std_score = s.get('PTS',0) + s.get('REB',0)*1.2 + s.get('AST',0)*1.5 + s.get('STL',0)*2 + s.get('BLK',0)*2
                 fppm = std_score / mpg if mpg > 0 else 0
                 eff_icon = "💎" if fppm > 1.1 else ""
-                
                 w_list.append({'Nombre': p.name, 'Eq': p.proTeam, 'Trend': f"{ti} {pch:+.1f}%", 'Min': round(mpg,1), 
                                'Score': round(sc,1), 'FPPM': f"{eff_icon} {fppm:.2f}", 'Aporta': ",".join(cats_hit) if cats_hit else "-", '_trend': pch, '_fppm': fppm})
             if w_list:
@@ -284,25 +292,32 @@ with tab3:
                 st.dataframe(df_w[['Nombre','Eq','Trend','FPPM','Min','Score','Aporta']].head(20), use_container_width=True, hide_index=True)
             else: st.info("Sin resultados.")
 
-# TAB 4: EL ESPÍA (INTEL HUB)
+# TAB 4: EL ESPÍA (V5.4)
 with tab4:
-    st.subheader("🕵️ Actividad Reciente de la Liga")
-    df_act = get_league_activity(liga)
-    if not df_act.empty:
-        # Highlight drops importantes
-        st.dataframe(df_act, use_container_width=True, hide_index=True)
-    else:
-        st.info("No hay actividad reciente o la API no la entrega.")
+    st.subheader("🕵️ Actividad Reciente")
+    try:
+        df_act = get_league_activity(liga)
+        if not df_act.empty and 'Error' not in df_act.columns:
+            st.dataframe(df_act, use_container_width=True, hide_index=True)
+        elif 'Error' in df_act.columns:
+            st.warning(f"Error leyendo actividad: {df_act.iloc[0]['Error']}")
+        else:
+            st.info("No hay movimientos recientes.")
+    except:
+        st.info("Datos no disponibles.")
         
     st.markdown("---")
     st.subheader("📰 Noticias NBA (En Vivo)")
     news = get_nba_news()
-    for n in news:
-        st.markdown(f"""
-        <div class="news-card">
-            <div class="news-title"><a href="{n['link']}" target="_blank" style="color:white;text-decoration:none;">{n['title']}</a></div>
-            <div class="news-date">{n['pubDate']}</div>
-        </div>
-        """, unsafe_allow_html=True)
+    if news:
+        for n in news:
+            st.markdown(f"""
+            <div class="news-card">
+                <a class="news-title" href="{n['link']}" target="_blank">{n['title']}</a>
+                <div class="news-date">{n['pubDate']}</div>
+            </div>
+            """, unsafe_allow_html=True)
+    else:
+        st.warning("No se pudieron cargar las noticias (Bloqueo de región o red).")
 
-st.caption("🚀 Fantasy GM Architect v5.3 | The Intel Hub")
+st.caption("🚀 Fantasy GM Architect v5.4 | Stealth Mode")
