@@ -6,19 +6,11 @@ from datetime import datetime, timedelta
 import sys
 import os
 
-# Importamos tu configuración
 from src.conectar import obtener_liga
 from config.credenciales import LIGAS
 
-# --- CONFIGURACIÓN PÁGINA ---
-st.set_page_config(
-    page_title="Fantasy GM Pro",
-    page_icon="🏀",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(page_title="Fantasy GM Pro", page_icon="🏀", layout="wide", initial_sidebar_state="expanded")
 
-# --- CSS ---
 st.markdown("""
 <style>
     .metric-card {background-color: #1E1E1E; padding: 15px; border-radius: 10px; border: 1px solid #333;}
@@ -28,37 +20,27 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- MAPEO DE EMERGENCIA (Solo para casos muy raros) ---
-# Nota: ESPN suele usar WSH, NY, GS, NO, SA, UTA, PHX
+# --- MAPEO BLINDADO ---
 MAPEO_EQUIPOS = {
-    'UTAH': 'UTA',  # La librería suele decir UTAH, la API UTA
-    'PHO': 'PHX',   # La librería PHO, la API PHX
-    'WAS': 'WSH',   # Por si acaso
-    'NYK': 'NY',
-    'GSW': 'GS',
-    'NOP': 'NO',
-    'SAS': 'SA'
+    'WSH': 'WAS', 'WAS': 'WAS',
+    'UTAH': 'UTA', 'UTA': 'UTA', 'UTH': 'UTA',
+    'NO': 'NOP', 'NOP': 'NOP', 'NOR': 'NOP',
+    'NY': 'NYK', 'NYK': 'NYK',
+    'SA': 'SAS', 'SAS': 'SAS', 'SAN': 'SAS',
+    'PHO': 'PHX', 'PHX': 'PHX',
+    'GS': 'GSW', 'GSW': 'GSW',
+    'LAC': 'LAC', 'LAL': 'LAL' # Aseguramos Los Angeles
 }
 
+def normalizar_equipo(abrev):
+    # Normalizamos a mayúsculas y buscamos
+    return MAPEO_EQUIPOS.get(abrev.upper(), abrev.upper())
+
 def verificar_juego_hoy(equipo_roster, lista_equipos_hoy):
-    """
-    Verifica si un equipo juega hoy probando varias combinaciones de nombre.
-    """
-    # 1. Intento Directo (Exacto)
-    if equipo_roster in lista_equipos_hoy:
-        return True
-        
-    # 2. Intento con Mapeo
-    traducido = MAPEO_EQUIPOS.get(equipo_roster)
-    if traducido and traducido in lista_equipos_hoy:
-        return True
-        
-    # 3. Intento Inverso (Por si el mapa está al revés)
-    # Buscamos si alguna clave del mapa apunta al valor actual
-    for k, v in MAPEO_EQUIPOS.items():
-        if v == equipo_roster and k in lista_equipos_hoy:
-            return True
-            
+    # 1. Intento Directo
+    if equipo_roster in lista_equipos_hoy: return True
+    # 2. Intento Normalizado
+    if normalizar_equipo(equipo_roster) in lista_equipos_hoy: return True
     return False
 
 # --- FUNCIONES ---
@@ -154,7 +136,7 @@ for m in box_scores:
     if PALABRA_CLAVE.lower() in m.home_team.team_name.lower(): mi_matchup = m; soy_home = True; break
     elif PALABRA_CLAVE.lower() in m.away_team.team_name.lower(): mi_matchup = m; soy_home = False; break
 
-# 1. GRID SEMANAL
+# 1. GRID SEMANAL (LÓGICA V3.7 - CORREGIDA)
 st.header(f"📅 Planificación Semanal (Límite: {limit_slots})")
 if mi_matchup:
     with st.spinner("Analizando Calendario..."):
@@ -169,16 +151,17 @@ if mi_matchup:
         for dia in dias_keys:
             equipos_juegan = calendario[dia]
             
+            # --- CORRECCIÓN: SOLO FILTRAMOS IR, NO INJURY STATUS (PARA PROYECCIÓN FUTURA) ---
             disp_yo = 0
             for p in mi_equipo_obj.roster:
-                if p.injuryStatus != 'OUT' and p.lineupSlot != 'IR':
-                    # VERIFICACIÓN INTELIGENTE
+                # Si está en IR, no cuenta. Si está OUT pero en roster activo, SÍ cuenta para el futuro.
+                if p.lineupSlot != 'IR':
                     if verificar_juego_hoy(p.proTeam, equipos_juegan):
                         disp_yo += 1
             
             disp_riv = 0
             for p in rival_obj.roster:
-                if p.injuryStatus != 'OUT' and p.lineupSlot != 'IR':
+                if p.lineupSlot != 'IR':
                     if verificar_juego_hoy(p.proTeam, equipos_juegan):
                         disp_riv += 1
             
@@ -201,11 +184,13 @@ if mi_matchup:
         df_grid = pd.DataFrame([fila_yo, fila_rival, fila_diff], columns=["EQUIPO"] + dias_keys + ["TOTAL"])
         st.dataframe(df_grid, use_container_width=True)
 
-        # DEBUGGER OPCIONAL (Para que verifiques si todo está OK)
-        with st.expander("🕵️ Verificación de Equipos"):
-            col_hoy = next((k for k in dias_keys if str(datetime.now().day) in k), dias_keys[0])
-            teams_playing = calendario.get(col_hoy, [])
-            st.write(f"Equipos jugando hoy según API: {teams_playing}")
+        # DEBUGGER (Solo visible si despliegas)
+        with st.expander("🕵️ Debugger de Roster"):
+            st.write(f"Total roster: {len(mi_equipo_obj.roster)}")
+            data_db = []
+            for p in mi_equipo_obj.roster:
+                data_db.append([p.name, p.proTeam, p.injuryStatus, p.lineupSlot])
+            st.dataframe(pd.DataFrame(data_db, columns=['Nombre','Eq','Status','Slot']))
 
 # 2. MATCHUP & 3. VERDUGO
 st.markdown("---")
@@ -231,10 +216,15 @@ with c2:
         for p in mi_equipo_obj.roster:
             s=p.stats.get(f"{season_id}_total",{}).get('avg',{})
             if not s: s=p.stats.get(f"{season_id}_projected",{}).get('avg',{})
-            scr=s.get('PTS',0)+s.get('REB',0)*1.2+s.get('AST',0)*1.5
-            icon="⛔" if p.injuryStatus=='OUT' else "✅"
-            dr.append({'J':p.name,'St':icon,'Sc':round(scr,1)})
-        st.dataframe(pd.DataFrame(dr).sort_values(by='Sc'), use_container_width=True)
+            scr=s.get('PTS',0)+s.get('REB',0)*1.2+s.get('AST',0)*1.5+s.get('STL',0)*2+s.get('BLK',0)*2
+            if 'DD' in config['categorias']: scr += stats.get('DD', 0) * 5
+            icon = "⛔" if p.injuryStatus == 'OUT' else "⚠️" if p.injuryStatus == 'DAY_TO_DAY' else "✅"
+            dr.append({'J':p.name,'St':icon,'Pos':p.lineupSlot,'Scr':round(scr,1),'Min':round(stats.get('MIN',0),1)})
+        
+        df_r = pd.DataFrame(dr).sort_values(by='Scr', ascending=True)
+        st.dataframe(df_r, use_container_width=True, height=300)
+        les_act = df_r[ (df_r['St'] == '⛔') & (df_r['Pos'] != 'IR') ]
+        if not les_act.empty: st.error(f"🚨 JUGADORES OUT ACTIVOS: {', '.join(les_act['J'].tolist())}")
 
 # 4. WAIVER KING
 st.markdown("---")
@@ -253,7 +243,6 @@ if st.button("🔎 Buscar Joyas"):
         for p in fa:
             if getattr(p, 'acquisitionType', []) or p.injuryStatus == 'OUT': continue
             
-            # VERIFICACIÓN INTELIGENTE EN WAIVER TAMBIÉN
             if s_hoy and eq_hoy:
                 if not verificar_juego_hoy(p.proTeam, eq_hoy): continue
             
@@ -287,4 +276,4 @@ if st.button("🔎 Buscar Joyas"):
             except: st.dataframe(df_w)
         else: st.error("Sin resultados.")
 
-st.caption("🚀 Fantasy GM Architect v3.6 | Smart Team Matcher")
+st.caption("🚀 Fantasy GM Architect v3.7 | Planning Grid Fixed")
