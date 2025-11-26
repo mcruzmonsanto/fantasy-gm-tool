@@ -3,8 +3,6 @@ import pandas as pd
 import requests
 import json
 from datetime import datetime, timedelta
-import sys
-import os
 import xml.etree.ElementTree as ET
 
 # --- 1. CONFIGURACIÓN Y CONEXIÓN ---
@@ -18,54 +16,41 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# --- 2. ESTILOS VISUALES (CSS AJUSTADO PARA MÓVIL) ---
+# --- 2. ESTILOS VISUALES ---
 st.markdown("""
 <style>
-    /* Margen superior amplio para evitar cortes en móviles */
-    .block-container {padding-top: 6rem; padding-bottom: 5rem;}
-    
+    .block-container {padding-top: 2rem; padding-bottom: 4rem;}
     .stDataFrame {border: 1px solid #2b2b2b; border-radius: 5px;}
-    .team-name {font-size: 1.2rem; font-weight: 800; text-align: center; margin-bottom: 0; line-height: 1.2;}
-    .vs-tag {font-size: 1rem; color: #ff4b4b; text-align: center; font-weight: 900; margin-top: 5px;}
-    .league-tag {font-size: 0.8rem; color: #aaa; text-align: center; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 15px;}
-    
+    .team-name {font-size: 1.1rem; font-weight: 700; text-align: center; margin-bottom: 0;}
+    .vs-tag {font-size: 0.9rem; color: #ff4b4b; text-align: center; font-weight: 800; margin-top: 5px;}
+    .league-tag {font-size: 0.75rem; color: #888; text-align: center; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px;}
     .metric-box {
         background-color: #1e1e1e; border: 1px solid #333; border-radius: 8px; 
-        padding: 10px; text-align: center; margin-bottom: 10px;
+        padding: 15px; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.2);
     }
-    .win-val {color: #00ff00; font-size: 1.4rem; font-weight: bold;}
-    .lose-val {color: #ff4b4b; font-size: 1.4rem; font-weight: bold;}
-    .label-txt {color: #ccc; font-size: 0.8rem; text-transform: uppercase;}
-    
+    .win-val {color: #00ff00; font-size: 1.5rem; font-weight: bold;}
+    .lose-val {color: #ff4b4b; font-size: 1.5rem; font-weight: bold;}
+    .label-txt {color: #ccc; font-size: 0.85rem;}
     .news-card {
         background-color: #262730; padding: 12px; border-radius: 6px; 
         margin-bottom: 8px; border-left: 3px solid #ff4b4b;
+        transition: transform 0.2s;
     }
+    .news-card:hover {transform: translateX(5px);}
     .news-title {font-weight: 600; color: #fff; text-decoration: none; font-size: 0.95rem;}
     .news-date {color: #888; font-size: 0.75rem; margin-top: 4px;}
 </style>
 """, unsafe_allow_html=True)
 
-# --- 3. MOTOR DE DATOS ---
+# --- 3. MOTOR DE DATOS (LÓGICA) ---
 
-# Alias Nucleares (LAL y LAC separados)
 GRUPOS_EQUIPOS = [
     ['PHI', 'PHL', '76ERS'], ['UTA', 'UTAH', 'UTH'], ['NY', 'NYK', 'NYA'], ['GS', 'GSW', 'GOL'],
     ['NO', 'NOP', 'NOR'], ['SA', 'SAS', 'SAN'], ['PHO', 'PHX'], ['WAS', 'WSH'], ['CHA', 'CHO'],
-    ['BKN', 'BRK', 'BK'], ['LAL'], ['LAC'], 
+    ['BKN', 'BRK', 'BK'], ['LAL', 'LAC'], 
     ['TOR'], ['MEM'], ['MIA'], ['ORL'], ['MIN'], ['MIL'], ['DAL'], ['DEN'], ['HOU'], 
     ['DET'], ['IND'], ['CLE'], ['CHI'], ['ATL'], ['BOS'], ['OKC'], ['POR'], ['SAC']
 ]
-
-def normalizar_equipo(abrev):
-    s = str(abrev).strip().upper()
-    for g in GRUPOS_EQUIPOS:
-        if s in g:
-            # Retornar el de 3 letras estándar si es posible
-            for c in g:
-                if len(c) == 3 and c not in ['UTH','PHL','NYA','GOL','NOR','SAN']: return c
-            return g[0]
-    return s
 
 def son_mismo_equipo(eq1, eq2):
     r, a = str(eq1).strip().upper(), str(eq2).strip().upper()
@@ -78,6 +63,13 @@ def check_match(eq_roster, lista_api):
     for eq_api in lista_api:
         if son_mismo_equipo(eq_roster, eq_api): return eq_api
     return None
+
+def normalizar_nombre(eq):
+    """Normaliza nombre para buscar en listas manuales"""
+    s = str(eq).strip().upper()
+    for g in GRUPOS_EQUIPOS:
+        if s in g: return g[0] # Retorna el primer alias conocido
+    return s
 
 @st.cache_data(ttl=3600) 
 def get_data_semanal():
@@ -107,31 +99,56 @@ def get_data_semanal():
         except: calendario[d_fmt] = []
     return calendario, equipos_hoy_detalle, rivales_map
 
+# --- SOS HÍBRIDO (API + MANUAL) ---
+# Listas manuales de seguridad por si la API falla (Actualizadas 2025)
+TOP_TIER = ['BOS', 'OKC', 'DEN', 'MIN', 'NYK', 'DAL', 'PHX', 'CLE', 'MIL', 'PHI']
+LOW_TIER = ['WAS', 'DET', 'POR', 'CHA', 'BKN', 'UTA', 'TOR', 'CHI']
+
 @st.cache_data(ttl=21600)
 def get_sos_map():
+    """Intenta API, si falla devuelve dict vacío"""
     try:
         d = requests.get("http://site.api.espn.com/apis/site/v2/sports/basketball/nba/standings", timeout=3).json()
         sos = {}
         for c in d.get('children', []):
             for team in c.get('standings', {}).get('entries', []):
-                # Guardamos tanto la versión raw como la normalizada para asegurar match
-                raw = team['team']['abbreviation']
-                norm = normalizar_equipo(raw)
-                val = 0.5
+                abbr = team['team']['abbreviation']
                 for s in team.get('stats', []):
-                    if s.get('name') == 'winPercent': val = s.get('value', 0.5); break
-                sos[raw] = val
-                sos[norm] = val
+                    if s.get('name') == 'winPercent': sos[abbr] = s.get('value', 0.5); break
         return sos
     except: return {}
 
 def get_sos_icon(opponent, sos_map):
     if not opponent: return ""
-    opp_norm = normalizar_equipo(opponent)
-    # Intentamos buscar normalizado, si falla, raw, si falla, 0.5
-    win_pct = sos_map.get(opp_norm, sos_map.get(opponent, 0.5))
+    
+    # 1. Intento Normalización
+    opp_norm = normalizar_nombre(opponent)
+    
+    # 2. Búsqueda Manual (Backup Infalible)
+    # Buscamos si algún alias del oponente está en las listas manuales
+    es_top = False
+    es_low = False
+    
+    for g in GRUPOS_EQUIPOS:
+        if opp_norm in g:
+            # Check si algún alias de este grupo está en TOP o LOW
+            if any(alias in TOP_TIER for alias in g): es_top = True
+            if any(alias in LOW_TIER for alias in g): es_low = True
+            break
+            
+    # Fallback directo si no encontró grupo
+    if not es_top and not es_low:
+        if opp_norm in TOP_TIER: es_top = True
+        if opp_norm in LOW_TIER: es_low = True
+
+    if es_top: return "🔴"
+    if es_low: return "🟢"
+
+    # 3. Si no está en manual, miramos API
+    win_pct = sos_map.get(opponent, 0.5)
     if win_pct > 0.60: return "🔴" 
     if win_pct < 0.40: return "🟢" 
+    
     return "⚪"
 
 def get_ownership(liga):
@@ -145,11 +162,17 @@ def get_ownership(liga):
     except: return {}
 
 def get_news():
-    # Versión simple y robusta (sin headers complejos que bloquean Streamlit Cloud)
+    """Versión BLINDADA TOTAL: Retorna lista vacía si falla cualquier cosa"""
     try:
-        r = requests.get("https://www.espn.com/espn/rss/nba/news", headers={'User-Agent': 'Mozilla/5.0'}, timeout=4)
+        r = requests.get("https://www.espn.com/espn/rss/nba/news", headers={'User-Agent': 'Mozilla/5.0'}, timeout=3)
+        if r.status_code != 200: return []
         root = ET.fromstring(r.content)
-        return [{'t': i.find('title').text, 'l': i.find('link').text, 'd': i.find('pubDate').text} for i in root.findall('./channel/item')[:6]]
+        items = []
+        for i in root.findall('./channel/item')[:6]:
+            t = i.find('title'); l = i.find('link'); d = i.find('pubDate')
+            if t is not None and l is not None:
+                items.append({'t': t.text, 'l': l.text, 'd': d.text if d is not None else ""})
+        return items
     except: return []
 
 def get_league_activity(liga):
@@ -190,7 +213,7 @@ def calc_matchup_totals(lineup):
     if t['FTA']: t['FT%'] = t['FTM']/t['FTA']
     return t
 
-# --- 4. INTERFAZ DE USUARIO ---
+# --- 4. INTERFAZ DE USUARIO (UI) ---
 
 with st.sidebar:
     st.header("⚙️ Configuración")
@@ -228,10 +251,9 @@ with st.expander("📅 Planificación Semanal (Grid)", expanded=True):
     rows = {"YO": [], "RIVAL": [], "DIFF": []}
     tot_y, tot_r = 0, 0
     
-    for dia, equipos_del_dia in cal.items():
-        # CORRECCIÓN DE VARIABLE: usamos equipos_del_dia
-        cy = sum(1 for p in mi_equipo.roster if p.lineupSlot != 'IR' and (not excluir_out or p.injuryStatus != 'OUT') and check_match(p.proTeam, equipos_del_dia))
-        cr = sum(1 for p in rival.roster if p.lineupSlot != 'IR' and (not excluir_out or p.injuryStatus != 'OUT') and check_match(p.proTeam, equipos_del_dia))
+    for dia, eqs in cal.items():
+        cy = sum(1 for p in mi_equipo.roster if p.lineupSlot != 'IR' and (not excluir_out or p.injuryStatus != 'OUT') and check_match(p.proTeam, eqs))
+        cr = sum(1 for p in rival.roster if p.lineupSlot != 'IR' and (not excluir_out or p.injuryStatus != 'OUT') and check_match(p.proTeam, eqs))
         uy, ur = min(cy, limit_slots), min(cr, limit_slots)
         rows["YO"].append(uy); rows["RIVAL"].append(ur)
         d = uy - ur
@@ -250,7 +272,8 @@ necesidades = []
 
 # 1. FACE-OFF
 with tab1:
-    sos_map = get_sos_map()
+    sos_map = get_sos_map() # Mapa API (puede estar vacio)
+    
     def get_power(roster):
         l = []
         for p in roster:
@@ -258,6 +281,7 @@ with tab1:
                 mt = check_match(p.proTeam, hoy_eqs)
                 if mt:
                     opp = hoy_rivs.get(mt, "")
+                    # Usamos la función híbrida para SOS
                     si = get_sos_icon(opp, sos_map)
                     sc, _ = calc_score(p, config, season_id)
                     l.append({'J': p.name, 'VS': f"{si} {opp}", 'FP': round(sc,1)})
@@ -276,29 +300,7 @@ with tab1:
         st.markdown(f"<div class='metric-box'><div class='label-txt'>RIVAL</div><div class='{'win-val' if diff_p<0 else 'lose-val'}'>{round(rv_p,1)}</div></div>", unsafe_allow_html=True)
         if rv_l: st.dataframe(pd.DataFrame(rv_l), use_container_width=True, hide_index=True)
 
-    st.divider()
-    # LÓGICA DE RESCATE
-    if diff_p < 0:
-        brecha = abs(diff_p)
-        st.error(f"⚠️ Pierdes por -{round(brecha,1)} FP.")
-        if st.button("🚑 BUSCAR RESCATE"):
-            with st.spinner("Buscando..."):
-                own_data = get_ownership(liga)
-                fa = liga.free_agents(size=150)
-                rescate = []
-                for p in fa:
-                    if getattr(p, 'acquisitionType', []) or p.injuryStatus == 'OUT': continue
-                    mt = check_match(p.proTeam, hoy_eqs)
-                    if not mt: continue
-                    sc, s = calc_score(p, config, season_id)
-                    if sc > 15:
-                        di = sc - brecha
-                        ic = "🦸‍♂️" if di > 0 else "🩹"
-                        opp = hoy_rivs.get(mt, "")
-                        si = get_sos_icon(opp, sos_map)
-                        rescate.append({'Jugador': p.name, 'Eq': p.proTeam, 'VS': f"{si} {opp}", 'Score': round(sc,1), 'Impacto': f"{ic} {round(di,1)}"})
-                if rescate: st.dataframe(pd.DataFrame(rescate).sort_values('Score', ascending=False).head(5), use_container_width=True, hide_index=True)
-                else: st.warning("Mercado seco.")
+    if diff_p < 0: st.warning(f"Pierdes por {abs(round(diff_p,1))} FP. ¡Busca refuerzos!")
 
 # 2. MATCHUP
 with tab2:
@@ -329,6 +331,7 @@ with tab3:
         ic = "⛔" if p.injuryStatus == 'OUT' else "⚠️" if p.injuryStatus == 'DAY_TO_DAY' else "✅"
         rost_data.append({'J': p.name, 'St': ic, 'Pos': p.lineupSlot, 'Score': round(sc,1), 'Min': round(s.get('MIN',0),1)})
     st.dataframe(pd.DataFrame(rost_data).sort_values('Score'), use_container_width=True, hide_index=True)
+    
     if sel_p:
         po = next((p for p in active_roster if p.name == sel_p), None)
         if po:
@@ -342,6 +345,7 @@ with tab4:
     min_m = c1.number_input("Minutos >", 10, 40, 22)
     s_hoy = c2.checkbox("Juegan HOY", True)
     sort_by = st.selectbox("Ordenar:", ["Score (Rendimiento)", "Trend (Hype)", "FPPM (Eficiencia)"])
+    
     if st.button("🔎 Escanear Mercado"):
         with st.spinner("Analizando..."):
             own = get_ownership(liga)
@@ -356,21 +360,26 @@ with tab4:
                 if not s or sc < 5: continue
                 mpg = s.get('MIN', 0)
                 if mpg < min_m: continue
+                
                 riv = hoy_rivs.get(mt, "") if mt else ""
                 si = get_sos_icon(riv, sos_map)
                 od = own.get(p.playerId, {})
                 pch = od.get('percentChange', 0.0); pop = od.get('percentOwned', 0.0)
                 ti = "🔥🔥" if pch>2 else "🔥" if pch>0.5 else "📈" if pch>0 else "❄️"
+                
                 sc = mpg * 0.5
                 cats_hit = [c for c in necesidades if s.get(c,0) > 0]
                 if necesidades: sc += len(cats_hit) * 10
                 if pch > 1.5: sc += 15
+                
                 std = s.get('PTS',0)+s.get('REB',0)*1.2+s.get('AST',0)*1.5+s.get('STL',0)*2+s.get('BLK',0)*2
                 fppm = sc/mpg if mpg>0 else 0
                 ei = "💎" if fppm > 1.1 else ""
+                
                 w_list.append({'Nombre': p.name, 'Eq': p.proTeam, 'VS': f"{si} {riv}", 
                                'Trend': f"{ti} {pch:+.1f}%", 'Score': round(sc,1), 'FPPM': f"{ei}{fppm:.2f}", 
                                'Aporta': ",".join(cats_hit) if cats_hit else "-", '_tr': pch, '_fp': fppm})
+            
             if w_list:
                 df = pd.DataFrame(w_list)
                 if sort_by == "Trend (Hype)": df = df.sort_values('_tr', ascending=False)
@@ -408,10 +417,13 @@ with tab6:
     except: pass
     st.divider()
     st.subheader("📰 Noticias")
-    news_list = get_nba_news()
+    
+    # Llamada BLINDADA a noticias
+    news_list = get_news()
     if news_list:
         for n in news_list:
             st.markdown(f"<div class='news-card'><a class='news-title' href='{n['l']}' target='_blank'>{n['t']}</a><div class='news-date'>{n['d']}</div></div>", unsafe_allow_html=True)
-    else: st.info("No hay noticias disponibles.")
+    else:
+        st.info("No hay noticias disponibles.")
 
-st.caption("🚀 Fantasy GM Architect v7.3 | Polished Stable")
+st.caption("🚀 Fantasy GM Architect v9.2 | Bulletproof Edition")
