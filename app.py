@@ -18,19 +18,11 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- SISTEMA DE ALIAS (INFALIBLE) ---
+# --- SISTEMA DE ALIAS V4.1 ---
 GRUPOS_EQUIPOS = [
-    ['PHI', 'PHL', '76ERS'],
-    ['UTA', 'UTAH', 'UTH'],
-    ['NY', 'NYK', 'NYA'],
-    ['GS', 'GSW', 'GOL'],
-    ['NO', 'NOP', 'NOR'],
-    ['SA', 'SAS', 'SAN'],
-    ['PHO', 'PHX'],
-    ['WAS', 'WSH'],
-    ['CHA', 'CHO'],
-    ['BKN', 'BRK', 'BK'],
-    ['LAL', 'LAC'], # Separados por si acaso, pero la API a veces confunde LA
+    ['PHI', 'PHL', '76ERS'], ['UTA', 'UTAH', 'UTH'], ['NY', 'NYK', 'NYA'], ['GS', 'GSW', 'GOL'],
+    ['NO', 'NOP', 'NOR'], ['SA', 'SAS', 'SAN'], ['PHO', 'PHX'], ['WAS', 'WSH'], ['CHA', 'CHO'],
+    ['BKN', 'BRK', 'BK'], ['LAL', 'LAC'],
     ['TOR'], ['MEM'], ['MIA'], ['ORL'], ['MIN'], ['MIL'], ['DAL'], ['DEN'], ['HOU'], 
     ['DET'], ['IND'], ['CLE'], ['CHI'], ['ATL'], ['BOS'], ['OKC'], ['POR'], ['SAC']
 ]
@@ -43,10 +35,14 @@ def son_mismo_equipo(eq_roster, eq_api):
         if r in grupo and a in grupo: return True
     return False
 
-def verificar_juego_hoy_nuclear(equipo_roster, lista_equipos_hoy_api):
+def obtener_match_exacto(equipo_roster, lista_equipos_hoy_api):
+    """
+    Devuelve el nombre del equipo de la API con el que hizo match, o None.
+    """
     for eq_api in lista_equipos_hoy_api:
-        if son_mismo_equipo(equipo_roster, eq_api): return True
-    return False
+        if son_mismo_equipo(equipo_roster, eq_api): 
+            return eq_api
+    return None
 
 # --- FUNCIONES ---
 @st.cache_data(ttl=3600) 
@@ -141,8 +137,13 @@ for m in box_scores:
     if PALABRA_CLAVE.lower() in m.home_team.team_name.lower(): mi_matchup = m; soy_home = True; break
     elif PALABRA_CLAVE.lower() in m.away_team.team_name.lower(): mi_matchup = m; soy_home = False; break
 
-# 1. GRID SEMANAL (V4.2 - Nuclear)
+# 1. GRID SEMANAL
 st.header(f"📅 Planificación Semanal (Límite: {limit_slots})")
+
+col_conf1, col_conf2 = st.columns([3,1])
+with col_conf2:
+    excluir_out = st.checkbox("Ignorar 'OUT' futuros", value=False, help="Si se marca, no cuenta jugadores lesionados para días futuros.")
+
 if mi_matchup:
     with st.spinner("Analizando..."):
         calendario = obtener_calendario_semanal_nba()
@@ -156,15 +157,23 @@ if mi_matchup:
         for dia in dias_keys:
             equipos_juegan = calendario[dia]
             
+            # YO
             disp_yo = 0
             for p in mi_equipo_obj.roster:
-                if p.lineupSlot != 'IR': 
-                    if verificar_juego_hoy_nuclear(p.proTeam, equipos_juegan): disp_yo += 1
+                if p.lineupSlot == 'IR': continue
+                if excluir_out and p.injuryStatus == 'OUT': continue
+                
+                # Usamos la funcion que retorna el match exacto, si no es None, es True
+                if obtener_match_exacto(p.proTeam, equipos_juegan): 
+                    disp_yo += 1
             
+            # RIVAL
             disp_riv = 0
             for p in rival_obj.roster:
-                if p.lineupSlot != 'IR':
-                    if verificar_juego_hoy_nuclear(p.proTeam, equipos_juegan): disp_riv += 1
+                if p.lineupSlot == 'IR': continue
+                if excluir_out and p.injuryStatus == 'OUT': continue
+                if obtener_match_exacto(p.proTeam, equipos_juegan): 
+                    disp_riv += 1
             
             usados_yo = min(disp_yo, limit_slots)
             usados_riv = min(disp_riv, limit_slots)
@@ -184,7 +193,42 @@ if mi_matchup:
         df_grid = pd.DataFrame([fila_yo, fila_rival, fila_diff], columns=["EQUIPO"] + dias_keys + ["TOTAL"])
         st.dataframe(df_grid, use_container_width=True)
 
-# 2. MATCHUP & 3. VERDUGO (BUG FIX APPLIED)
+        # --- DEBUGGER V4.4 (DNA TEST) ---
+        with st.expander("🕵️ Lista de Asistencia (Ver quién sobra)"):
+            st.info("Selecciona el Domingo para ver por qué te cuenta 9 jugadores.")
+            dia_select = st.selectbox("Ver detalles del día:", dias_keys)
+            
+            equipos_api = calendario[dia_select]
+            st.caption(f"Equipos jugando (API): {', '.join(equipos_api)}")
+            
+            lista_activos = []
+            for p in mi_equipo_obj.roster:
+                if p.lineupSlot == 'IR': continue
+                
+                match_team = obtener_match_exacto(p.proTeam, equipos_api)
+                es_out = (p.injuryStatus == 'OUT')
+                
+                contado = False
+                if match_team:
+                    if excluir_out and es_out:
+                        contado = False
+                        match_info = f"Tiene partido ({match_team}) pero está OUT"
+                    else:
+                        contado = True
+                        match_info = f"MATCH: {p.proTeam} == {match_team}"
+                else:
+                    match_info = "-"
+                
+                lista_activos.append({
+                    "Jugador": p.name, 
+                    "Equipo": p.proTeam,
+                    "Contado?": "✅ SÍ" if contado else "❌ NO",
+                    "Detalle": match_info
+                })
+            
+            st.dataframe(pd.DataFrame(lista_activos).style.applymap(lambda v: 'color: green' if 'SÍ' in v else 'color: gray', subset=['Contado?']))
+
+# 2. MATCHUP & 3. VERDUGO
 st.markdown("---")
 c1, c2 = st.columns(2)
 with c1:
@@ -206,18 +250,12 @@ with c2:
     if mi_matchup:
         dr=[]
         for p in mi_equipo_obj.roster:
-            s = p.stats.get(f"{season_id}_total", {}).get('avg', {})
-            if not s: s = p.stats.get(f"{season_id}_projected", {}).get('avg', {})
-            
-            # CORRECCIÓN AQUÍ: Usamos 's' en lugar de 'stats'
-            scr = s.get('PTS', 0) + s.get('REB', 0)*1.2 + s.get('AST', 0)*1.5 + s.get('STL', 0)*2 + s.get('BLK', 0)*2
+            s=p.stats.get(f"{season_id}_total",{}).get('avg',{})
+            if not s: s=p.stats.get(f"{season_id}_projected",{}).get('avg',{})
+            scr=s.get('PTS',0)+s.get('REB',0)*1.2+s.get('AST',0)*1.5+s.get('STL',0)*2+s.get('BLK',0)*2
             if 'DD' in config['categorias']: scr += s.get('DD', 0) * 5
-            
             icon = "⛔" if p.injuryStatus == 'OUT' else "⚠️" if p.injuryStatus == 'DAY_TO_DAY' else "✅"
-            
-            # CORRECCIÓN AQUÍ: Usamos 's.get'
-            dr.append({'J': p.name, 'St': icon, 'Pos': p.lineupSlot, 'Scr': round(scr, 1), 'Min': round(s.get('MIN', 0), 1)})
-        
+            dr.append({'J':p.name,'St':icon,'Pos':p.lineupSlot,'Scr':round(scr,1),'Min':round(s.get('MIN',0),1)})
         df_r = pd.DataFrame(dr).sort_values(by='Scr', ascending=True)
         st.dataframe(df_r, use_container_width=True, height=300)
 
@@ -237,7 +275,7 @@ if st.button("🔎 Buscar Joyas"):
         for p in fa:
             if getattr(p, 'acquisitionType', []) or p.injuryStatus == 'OUT': continue
             if s_hoy and eq_hoy:
-                if not verificar_juego_hoy_nuclear(p.proTeam, eq_hoy): continue
+                if not obtener_match_exacto(p.proTeam, eq_hoy): continue
             stt = p.stats.get(f"{season_id}_total", {}).get('avg', {})
             if not stt: stt = p.stats.get(f"{season_id}_projected", {}).get('avg', {})
             if not stt: continue
@@ -263,4 +301,4 @@ if st.button("🔎 Buscar Joyas"):
             except: st.dataframe(df_w)
         else: st.error("Sin resultados.")
 
-st.caption("🚀 Fantasy GM Architect v4.2 | Final Nuclear Fix")
+st.caption("🚀 Fantasy GM Architect v4.4 | DNA Test Enabled")
