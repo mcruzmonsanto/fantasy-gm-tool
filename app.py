@@ -23,6 +23,8 @@ st.markdown("""
     .metric-card {background-color: #1E1E1E; padding: 15px; border-radius: 10px; border: 1px solid #333;}
     .big-font {font-size: 24px !important; font-weight: bold;}
     .stDataFrame {border: 1px solid #444;}
+    .trend-fire {color: #FF4B4B; font-weight: bold;}
+    .trend-up {color: #00FF00; font-weight: bold;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -138,12 +140,10 @@ if mi_matchup:
 
     st.markdown(f"### 🏆 Marcador: {wins} - {losses} - {ties}")
     df_matchup = pd.DataFrame(data_tabla, columns=['CAT', 'YO', 'RIVAL', 'DIFF', 'WIN?'])
-    
-    # CORRECCIÓN AQUÍ: width='stretch' en lugar de use_container_width=True
     try:
         st.dataframe(df_matchup, use_container_width=True)
     except:
-        st.dataframe(df_matchup) # Fallback para versiones viejas
+        st.dataframe(df_matchup)
     
     if necesidades:
         st.warning(f"🔥 PRIORIDAD DE FICHAJE: {', '.join(necesidades)}")
@@ -198,10 +198,11 @@ if mi_equipo_obj:
         st.error(f"🚨 JUGADORES 'OUT' EN ACTIVO: {', '.join(lesionados_activos['Jugador'].tolist())}")
 
 # ==========================================
-# SECCIÓN 3: WAIVER KING (MERCADO)
+# SECCIÓN 3: WAIVER KING (CON HYPE DETECTOR)
 # ==========================================
 st.markdown("---")
-st.header("💎 Waiver King (Mercado)")
+st.header("💎 Waiver King (Mercado + Hype)")
+st.caption("Busca jugadores que jueguen hoy y que el mundo esté fichando.")
 
 col_filtro1, col_filtro2 = st.columns(2)
 with col_filtro1:
@@ -210,29 +211,49 @@ with col_filtro2:
     solo_hoy = st.checkbox("Solo juegan HOY", value=True)
 
 if st.button("🔎 Buscar Joyas"):
-    with st.spinner('Escaneando mercado...'):
+    with st.spinner('Analizando Mercado, Calendario y Tendencias...'):
         equipos_hoy = obtener_equipos_hoy() if solo_hoy else []
         
         if solo_hoy:
             if equipos_hoy: st.info(f"Equipos hoy: {len(equipos_hoy)}")
-            else: st.warning("No hay partidos hoy.")
+            else: st.warning("No hay partidos hoy (o error API).")
 
-        free_agents = liga.free_agents(size=150)
+        # Escaneamos más jugadores para encontrar los Trending
+        free_agents = liga.free_agents(size=250)
         waiver_data = []
         
         for p in free_agents:
+            # 1. Filtro FA
             acq = getattr(p, 'acquisitionType', [])
             if len(acq) > 0: continue 
             if p.injuryStatus == 'OUT': continue
             if solo_hoy and equipos_hoy and p.proTeam not in equipos_hoy: continue
             
+            # 2. Stats
             stats = p.stats.get(f"{season_id}_total", {}).get('avg', {})
             if not stats: stats = p.stats.get(f"{season_id}_projected", {}).get('avg', {})
             if not stats: continue
             
+            # 3. Minutos
             mpg = stats.get('MIN', 0)
             if mpg < min_minutos: continue
             
+            # 4. Cálculo de Hype (Tendencias)
+            # percent_owned = % de equipos que lo tienen
+            # percent_change = % de cambio reciente (Esto es el HYPE)
+            own_pct = getattr(p, 'percent_owned', 0.0)
+            own_chg = getattr(p, 'percent_change', 0.0)
+            
+            trend_icon = ""
+            if own_chg > 4.0: trend_icon = "🔥🔥" # Super Hype
+            elif own_chg > 1.5: trend_icon = "🔥" # Hot
+            elif own_chg > 0.1: trend_icon = "📈" # Subiendo
+            elif own_chg < -1.0: trend_icon = "❄️" # Frio/Drop
+            
+            # Formato bonito para la tabla: "+5.2%" o "-1.0%"
+            trend_txt = f"{trend_icon} {own_chg:+.1f}%"
+
+            # 5. Score Base
             score = mpg * 0.5
             match_cats = []
             
@@ -244,20 +265,25 @@ if st.button("🔎 Buscar Joyas"):
                         match_cats.append(cat)
             else:
                 score += stats.get('PTS', 0) + stats.get('REB', 0) + stats.get('AST', 0)
+            
+            # BONUS POR HYPE: Si mucha gente lo ficha, sube en tu ranking
+            if own_chg > 2.0: score += 15
+            elif own_chg > 0.5: score += 5
 
             waiver_data.append({
                 'Nombre': p.name,
                 'Equipo': p.proTeam,
+                'Trend': trend_txt,     # <--- NUEVA COLUMNA
+                'Own%': f"{own_pct:.1f}%", # <--- NUEVA COLUMNA
                 'Min': round(mpg, 1),
                 'Score': round(score, 1),
-                'Ayuda en': ", ".join(match_cats) if match_cats else "General",
-                'PTS': round(stats.get('PTS',0),1),
-                'REB': round(stats.get('REB',0),1)
+                'Ayuda en': ", ".join(match_cats) if match_cats else "General"
             })
             
         if waiver_data:
             df_waiver = pd.DataFrame(waiver_data)
-            df_waiver = df_waiver.sort_values(by='Score', ascending=False).head(15)
+            # Ordenamos por Score, pero el Score ya incluye el bonus de Hype
+            df_waiver = df_waiver.sort_values(by='Score', ascending=False).head(20)
             try:
                 st.dataframe(df_waiver, use_container_width=True)
             except:
@@ -266,4 +292,4 @@ if st.button("🔎 Buscar Joyas"):
             st.error("No se encontraron jugadores.")
 
 st.markdown("---")
-st.caption("🚀 Fantasy GM Architect v1.3")
+st.caption("🚀 Fantasy GM Architect v2.0 | Hype Detector Enabled")
