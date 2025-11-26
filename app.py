@@ -6,28 +6,62 @@ from datetime import datetime, timedelta
 import sys
 import os
 
+# Importamos tu configuración
 from src.conectar import obtener_liga
 from config.credenciales import LIGAS
 
-st.set_page_config(page_title="Fantasy GM Pro", page_icon="🏀", layout="wide", initial_sidebar_state="expanded")
+# --- CONFIGURACIÓN PÁGINA ---
+st.set_page_config(
+    page_title="Fantasy GM Pro",
+    page_icon="🏀",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
+# --- CSS ---
 st.markdown("""
 <style>
     .metric-card {background-color: #1E1E1E; padding: 15px; border-radius: 10px; border: 1px solid #333;}
     .stDataFrame {border: 1px solid #444;}
+    .diff-pos {color: #00FF00; font-weight: bold;}
+    .diff-neg {color: #FF4B4B; font-weight: bold;}
 </style>
 """, unsafe_allow_html=True)
 
-# --- MAPEO MAESTRO ---
+# --- MAPEO DE EMERGENCIA (Solo para casos muy raros) ---
+# Nota: ESPN suele usar WSH, NY, GS, NO, SA, UTA, PHX
 MAPEO_EQUIPOS = {
-    'WSH': 'WAS', 'UTAH': 'UTA', 'NO': 'NOP', 'NY': 'NYK', 'SA': 'SAS', 
-    'PHO': 'PHX', 'GS': 'GSW', 'UTH': 'UTA', 'SAN': 'SAS', 'NOR': 'NOP',
-    'GSW': 'GSW', 'WAS': 'WAS', 'NYK': 'NYK' # Redundancia segura
+    'UTAH': 'UTA',  # La librería suele decir UTAH, la API UTA
+    'PHO': 'PHX',   # La librería PHO, la API PHX
+    'WAS': 'WSH',   # Por si acaso
+    'NYK': 'NY',
+    'GSW': 'GS',
+    'NOP': 'NO',
+    'SAS': 'SA'
 }
 
-def normalizar_equipo(abrev):
-    return MAPEO_EQUIPOS.get(abrev.upper(), abrev.upper())
+def verificar_juego_hoy(equipo_roster, lista_equipos_hoy):
+    """
+    Verifica si un equipo juega hoy probando varias combinaciones de nombre.
+    """
+    # 1. Intento Directo (Exacto)
+    if equipo_roster in lista_equipos_hoy:
+        return True
+        
+    # 2. Intento con Mapeo
+    traducido = MAPEO_EQUIPOS.get(equipo_roster)
+    if traducido and traducido in lista_equipos_hoy:
+        return True
+        
+    # 3. Intento Inverso (Por si el mapa está al revés)
+    # Buscamos si alguna clave del mapa apunta al valor actual
+    for k, v in MAPEO_EQUIPOS.items():
+        if v == equipo_roster and k in lista_equipos_hoy:
+            return True
+            
+    return False
 
+# --- FUNCIONES ---
 @st.cache_data(ttl=3600) 
 def obtener_calendario_semanal_nba():
     hoy = datetime.now()
@@ -48,6 +82,38 @@ def obtener_calendario_semanal_nba():
         except: pass
         calendario_semanal[dia_fmt] = equipos_dia
     return calendario_semanal
+
+def obtener_equipos_hoy_simple():
+    hoy_str = datetime.now().strftime("%Y%m%d")
+    url = f"http://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={hoy_str}"
+    equipos = []
+    try:
+        data = requests.get(url).json()
+        for event in data.get('events', []):
+            for comp in event.get('competitions', []):
+                for competitor in comp.get('competitors', []):
+                    abrev = competitor.get('team', {}).get('abbreviation')
+                    if abrev: equipos.append(abrev)
+    except: pass
+    return equipos
+
+def obtener_datos_ownership(liga):
+    try:
+        year = liga.year; league_id = liga.league_id
+        url = f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/fba/seasons/{year}/segments/0/leagues/{league_id}"
+        filters = {"players": {"filterStatus": {"value": ["FREEAGENT", "WAIVERS"]}, "limit": 500, "sortPercOwned": {"sortPriority": 1, "sortAsc": False}}}
+        headers = {'x-fantasy-filter': json.dumps(filters)}
+        params = {'view': 'kona_player_info'}
+        cookies = liga.espn_request.cookies
+        r = requests.get(url, params=params, headers=headers, cookies=cookies)
+        data = r.json()
+        own_map = {}
+        for p in data.get('players', []):
+            pid = p.get('id')
+            own = p.get('player', {}).get('ownership', {})
+            own_map[pid] = {'percentOwned': own.get('percentOwned', 0.0), 'percentChange': own.get('percentChange', 0.0)}
+        return own_map
+    except: return {}
 
 def calcular_stats_manuales(lineup):
     totales = {'PTS':0, 'REB':0, 'AST':0, 'STL':0, 'BLK':0, '3PTM':0, 'TO':0, 'DD':0, 'FGM':0, 'FGA':0, 'FTM':0, 'FTA':0}
@@ -102,12 +168,19 @@ if mi_matchup:
         
         for dia in dias_keys:
             equipos_juegan = calendario[dia]
+            
             disp_yo = 0
             for p in mi_equipo_obj.roster:
-                if p.injuryStatus != 'OUT' and normalizar_equipo(p.proTeam) in equipos_juegan and p.lineupSlot != 'IR': disp_yo += 1
+                if p.injuryStatus != 'OUT' and p.lineupSlot != 'IR':
+                    # VERIFICACIÓN INTELIGENTE
+                    if verificar_juego_hoy(p.proTeam, equipos_juegan):
+                        disp_yo += 1
+            
             disp_riv = 0
             for p in rival_obj.roster:
-                if p.injuryStatus != 'OUT' and normalizar_equipo(p.proTeam) in equipos_juegan and p.lineupSlot != 'IR': disp_riv += 1
+                if p.injuryStatus != 'OUT' and p.lineupSlot != 'IR':
+                    if verificar_juego_hoy(p.proTeam, equipos_juegan):
+                        disp_riv += 1
             
             usados_yo = min(disp_yo, limit_slots)
             usados_riv = min(disp_riv, limit_slots)
@@ -128,35 +201,13 @@ if mi_matchup:
         df_grid = pd.DataFrame([fila_yo, fila_rival, fila_diff], columns=["EQUIPO"] + dias_keys + ["TOTAL"])
         st.dataframe(df_grid, use_container_width=True)
 
-        # --- SECCIÓN DE DIAGNÓSTICO (DEBUGGER) ---
-        with st.expander("🕵️ Diagnóstico de Roster (Debug)"):
-            st.write("Usa esto para ver qué jugadores no se están contando.")
-            
-            # Buscar la columna de hoy (miércoles 26)
-            hoy_fmt = datetime.now().strftime("%a %d")
-            # Fallback por si el formato de fecha varía
+        # DEBUGGER OPCIONAL (Para que verifiques si todo está OK)
+        with st.expander("🕵️ Verificación de Equipos"):
             col_hoy = next((k for k in dias_keys if str(datetime.now().day) in k), dias_keys[0])
-            
-            st.write(f"**Analizando para el día: {col_hoy}**")
             teams_playing = calendario.get(col_hoy, [])
-            st.caption(f"Equipos jugando hoy (API): {', '.join(teams_playing)}")
-            
-            debug_data = []
-            for p in mi_equipo_obj.roster:
-                raw_team = p.proTeam
-                norm_team = normalizar_equipo(raw_team)
-                juega = "✅ SÍ" if norm_team in teams_playing else "❌ NO"
-                if p.injuryStatus == 'OUT': juega = "⛔ OUT"
-                
-                debug_data.append({
-                    'Jugador': p.name,
-                    'Equipo (Raw)': raw_team,
-                    'Equipo (Norm)': norm_team,
-                    '¿Juega Hoy?': juega
-                })
-            st.dataframe(pd.DataFrame(debug_data))
+            st.write(f"Equipos jugando hoy según API: {teams_playing}")
 
-# Resto de secciones (Matchup, Verdugo, Waiver) simplificadas para no exceder límites de respuesta
+# 2. MATCHUP & 3. VERDUGO
 st.markdown("---")
 c1, c2 = st.columns(2)
 with c1:
@@ -185,4 +236,55 @@ with c2:
             dr.append({'J':p.name,'St':icon,'Sc':round(scr,1)})
         st.dataframe(pd.DataFrame(dr).sort_values(by='Sc'), use_container_width=True)
 
-st.caption("🚀 Fantasy GM Architect v3.5 | Debug Mode")
+# 4. WAIVER KING
+st.markdown("---")
+st.header("💎 Waiver King")
+fc1, fc2 = st.columns(2)
+with fc1: min_m = st.slider("Minutos Mínimos", 10, 40, 22)
+with fc2: s_hoy = st.checkbox("Solo juegan HOY", value=True)
+
+if st.button("🔎 Buscar Joyas"):
+    with st.spinner('Escaneando...'):
+        eq_hoy = obtener_equipos_hoy_simple() if s_hoy else []
+        own_map = obtener_datos_ownership(liga)
+        fa = liga.free_agents(size=200)
+        w_data = []
+        
+        for p in fa:
+            if getattr(p, 'acquisitionType', []) or p.injuryStatus == 'OUT': continue
+            
+            # VERIFICACIÓN INTELIGENTE EN WAIVER TAMBIÉN
+            if s_hoy and eq_hoy:
+                if not verificar_juego_hoy(p.proTeam, eq_hoy): continue
+            
+            stt = p.stats.get(f"{season_id}_total", {}).get('avg', {})
+            if not stt: stt = p.stats.get(f"{season_id}_projected", {}).get('avg', {})
+            if not stt: continue
+            
+            mpg = stt.get('MIN', 0)
+            if mpg < min_m: continue
+            
+            od = own_map.get(p.playerId, {})
+            pch = od.get('percentChange', 0.0); pop = od.get('percentOwned', 0.0)
+            ti = "🔥🔥" if pch>2 else "🔥" if pch>0.5 else "📈" if pch>0 else "❄️"
+            
+            sc = mpg * 0.5
+            mc = []
+            if necesidades:
+                for c in necesidades:
+                    v = stt.get(c, 0)
+                    if v > 0: sc += v * 10; mc.append(c)
+            else: sc += stt.get('PTS',0) + stt.get('REB',0) + stt.get('AST',0)
+            if pch > 1.5: sc += 15
+            elif pch > 0.5: sc += 8
+            
+            w_data.append({'Nombre': p.name, 'Eq': p.proTeam, 'Trend': f"{ti} {pch:+.1f}%", 'Own%': f"{pop:.1f}%",
+                           'Min': round(mpg,1), 'Score': round(sc,1), 'Ayuda': ", ".join(mc) if mc else "Gral"})
+            
+        if w_data:
+            df_w = pd.DataFrame(w_data).sort_values(by='Score', ascending=False).head(20)
+            try: st.dataframe(df_w, use_container_width=True)
+            except: st.dataframe(df_w)
+        else: st.error("Sin resultados.")
+
+st.caption("🚀 Fantasy GM Architect v3.6 | Smart Team Matcher")
