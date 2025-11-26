@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import requests
-import json  # <--- CRUCIAL PARA EL ARREGLO
+import json 
 from datetime import datetime
 import sys
 import os
@@ -24,8 +24,6 @@ st.markdown("""
     .metric-card {background-color: #1E1E1E; padding: 15px; border-radius: 10px; border: 1px solid #333;}
     .big-font {font-size: 24px !important; font-weight: bold;}
     .stDataFrame {border: 1px solid #444;}
-    .trend-fire {color: #FF4B4B; font-weight: bold;}
-    .trend-up {color: #00FF00; font-weight: bold;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -72,18 +70,11 @@ def calcular_stats_manuales(lineup):
     return totales
 
 def obtener_datos_ownership(liga):
-    """
-    Función Parcheada (V2.2):
-    Usa requests directo y json.dumps para asegurar que el header sea válido.
-    """
     try:
-        # 1. Construimos la URL
         year = liga.year
         league_id = liga.league_id
         url = f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/fba/seasons/{year}/segments/0/leagues/{league_id}"
 
-        # 2. El Filtro (LA CLAVE: Usar json.dumps)
-        # Pedimos jugadores libres/waivers, limitamos a 500 para velocidad
         filters = {
             "players": {
                 "filterStatus": {"value": ["FREEAGENT", "WAIVERS"]},
@@ -91,18 +82,10 @@ def obtener_datos_ownership(liga):
                 "sortPercOwned": {"sortPriority": 1, "sortAsc": False}
             }
         }
-        
-        headers = {
-            'x-fantasy-filter': json.dumps(filters) # <--- AQUÍ ESTABA EL ERROR (necesita json string)
-        }
-        
-        # 3. Parámetros
+        headers = {'x-fantasy-filter': json.dumps(filters)}
         params = {'view': 'kona_player_info'}
-        
-        # 4. Usamos las cookies que ya tiene la librería espn_api
         cookies = liga.espn_request.cookies
 
-        # 5. Petición Manual Blindada
         r = requests.get(url, params=params, headers=headers, cookies=cookies)
         data = r.json()
         
@@ -111,15 +94,13 @@ def obtener_datos_ownership(liga):
             pid = p_data.get('id')
             player_info = p_data.get('player', {})
             ownership = player_info.get('ownership', {})
-            
             ownership_map[pid] = {
                 'percentOwned': ownership.get('percentOwned', 0.0),
                 'percentChange': ownership.get('percentChange', 0.0)
             }
         return ownership_map
-
     except Exception as e:
-        print(f"Error ownership V2.2: {e}")
+        print(f"Error ownership: {e}")
         return {}
 
 # --- INTERFAZ PRINCIPAL ---
@@ -170,14 +151,12 @@ if mi_matchup:
     
     cats_liga = config['categorias']
     data_tabla = []
-    
     wins, losses, ties = 0, 0, 0
 
     for cat in cats_liga:
         key = '3PTM' if cat == '3PTM' and '3PTM' not in mis_stats else cat
         val_mio = mis_stats.get(key, 0)
         val_rival = rival_stats.get(key, 0)
-        
         diff = val_mio - val_rival if cat != 'TO' else val_rival - val_mio
         
         estado = "🟡"
@@ -187,21 +166,15 @@ if mi_matchup:
         
         fmt_mio = f"{val_mio:.3f}" if cat in ['FG%','FT%'] else f"{val_mio:.0f}"
         fmt_rival = f"{val_rival:.3f}" if cat in ['FG%','FT%'] else f"{val_rival:.0f}"
-
         data_tabla.append([cat, fmt_mio, fmt_rival, f"{diff:.2f}", estado])
 
     st.markdown(f"### 🏆 Marcador: {wins} - {losses} - {ties}")
     df_matchup = pd.DataFrame(data_tabla, columns=['CAT', 'YO', 'RIVAL', 'DIFF', 'WIN?'])
-    try:
-        st.dataframe(df_matchup, use_container_width=True)
-    except:
-        st.dataframe(df_matchup)
+    try: st.dataframe(df_matchup, use_container_width=True)
+    except: st.dataframe(df_matchup)
     
-    if necesidades:
-        st.warning(f"🔥 PRIORIDAD DE FICHAJE: {', '.join(necesidades)}")
-    else:
-        st.success("🎉 ¡Vas ganando todo! Mantén la posición.")
-
+    if necesidades: st.warning(f"🔥 PRIORIDAD DE FICHAJE: {', '.join(necesidades)}")
+    else: st.success("🎉 ¡Vas ganando todo! Mantén la posición.")
 else:
     st.warning("No se encontró matchup.")
     st.stop() 
@@ -239,40 +212,29 @@ if mi_equipo_obj:
     
     df_roster = pd.DataFrame(datos_roster)
     df_roster = df_roster.sort_values(by='Score', ascending=True)
-    
-    try:
-        st.dataframe(df_roster, use_container_width=True)
-    except:
-        st.dataframe(df_roster)
+    try: st.dataframe(df_roster, use_container_width=True)
+    except: st.dataframe(df_roster)
 
     lesionados_activos = df_roster[ (df_roster['Status'] == '⛔ OUT') & (df_roster['Pos'] != 'IR') ]
-    if not lesionados_activos.empty:
-        st.error(f"🚨 JUGADORES 'OUT' EN ACTIVO: {', '.join(lesionados_activos['Jugador'].tolist())}")
+    if not lesionados_activos.empty: st.error(f"🚨 JUGADORES 'OUT' EN ACTIVO: {', '.join(lesionados_activos['Jugador'].tolist())}")
 
 # ==========================================
-# SECCIÓN 3: WAIVER KING (CON HYPE FIX V2.2)
+# SECCIÓN 3: WAIVER KING (CON HYPE TUNING V2.3)
 # ==========================================
 st.markdown("---")
 st.header("💎 Waiver King (Mercado + Hype)")
 st.caption("Busca jugadores que jueguen hoy y que el mundo esté fichando.")
 
 col_filtro1, col_filtro2 = st.columns(2)
-with col_filtro1:
-    min_minutos = st.slider("Minutos Mínimos", 10, 40, 22)
-with col_filtro2:
-    solo_hoy = st.checkbox("Solo juegan HOY", value=True)
+with col_filtro1: min_minutos = st.slider("Minutos Mínimos", 10, 40, 22)
+with col_filtro2: solo_hoy = st.checkbox("Solo juegan HOY", value=True)
 
 if st.button("🔎 Buscar Joyas"):
-    with st.spinner('Analizando Mercado, Calendario y Tendencias...'):
+    with st.spinner('Analizando Mercado y Hype...'):
         equipos_hoy = obtener_equipos_hoy() if solo_hoy else []
-        
-        if solo_hoy:
-            if equipos_hoy: st.info(f"Equipos hoy: {len(equipos_hoy)}")
-            else: st.warning("No hay partidos hoy (o error API).")
+        if solo_hoy and not equipos_hoy: st.warning("No hay partidos hoy (o error API).")
 
-        # LLAMADA CORREGIDA PARA OBTENER OWNERSHIP
         ownership_map = obtener_datos_ownership(liga)
-
         free_agents = liga.free_agents(size=250)
         waiver_data = []
         
@@ -289,34 +251,31 @@ if st.button("🔎 Buscar Joyas"):
             mpg = stats.get('MIN', 0)
             if mpg < min_minutos: continue
             
-            # CRUCE DE DATOS HYPE
-            # Buscamos por ID. Si no está en el mapa, es 0.0
             p_data = ownership_map.get(p.playerId, {})
             own_pct = p_data.get('percentOwned', 0.0)
             own_chg = p_data.get('percentChange', 0.0)
             
+            # --- AJUSTE DE SENSIBILIDAD DEL HYPE ---
             trend_icon = ""
-            if own_chg > 4.0: trend_icon = "🔥🔥" 
-            elif own_chg > 1.5: trend_icon = "🔥" 
-            elif own_chg > 0.1: trend_icon = "📈" 
-            elif own_chg < -1.0: trend_icon = "❄️"
+            if own_chg > 2.0: trend_icon = "🔥🔥"   # Super Hype (+2%)
+            elif own_chg > 0.5: trend_icon = "🔥"   # Hot (+0.5%)
+            elif own_chg > 0.0: trend_icon = "📈"   # Subiendo (+0.1%)
+            elif own_chg < -0.5: trend_icon = "❄️"  # Bajando (-0.5%)
             
             trend_txt = f"{trend_icon} {own_chg:+.1f}%"
 
             score = mpg * 0.5
             match_cats = []
-            
             if necesidades:
                 for cat in necesidades:
                     val = stats.get(cat, 0)
-                    if val > 0:
-                        score += val * 10 
-                        match_cats.append(cat)
+                    if val > 0: score += val * 10; match_cats.append(cat)
             else:
                 score += stats.get('PTS', 0) + stats.get('REB', 0) + stats.get('AST', 0)
             
-            if own_chg > 2.0: score += 15
-            elif own_chg > 0.5: score += 5
+            # Bonus Hype Ajustado
+            if own_chg > 1.5: score += 15
+            elif own_chg > 0.5: score += 8
 
             waiver_data.append({
                 'Nombre': p.name,
@@ -331,12 +290,9 @@ if st.button("🔎 Buscar Joyas"):
         if waiver_data:
             df_waiver = pd.DataFrame(waiver_data)
             df_waiver = df_waiver.sort_values(by='Score', ascending=False).head(20)
-            try:
-                st.dataframe(df_waiver, use_container_width=True)
-            except:
-                st.dataframe(df_waiver)
-        else:
-            st.error("No se encontraron jugadores.")
+            try: st.dataframe(df_waiver, use_container_width=True)
+            except: st.dataframe(df_waiver)
+        else: st.error("No se encontraron jugadores.")
 
 st.markdown("---")
-st.caption("🚀 Fantasy GM Architect v2.2 | JSON Header Fix")
+st.caption("🚀 Fantasy GM Architect v2.3 | Hype Sensitivity Tuned")
