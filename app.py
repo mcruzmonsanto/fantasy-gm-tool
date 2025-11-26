@@ -16,14 +16,16 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# --- 2. ESTILOS VISUALES ---
+# --- 2. ESTILOS VISUALES (CSS CORREGIDO) ---
 st.markdown("""
 <style>
-    .block-container {padding-top: 2rem; padding-bottom: 4rem;}
+    /* AUMENTADO EL PADDING SUPERIOR PARA EVITAR CORTES EN TÍTULO */
+    .block-container {padding-top: 5rem; padding-bottom: 4rem;}
+    
     .stDataFrame {border: 1px solid #2b2b2b; border-radius: 5px;}
     .team-name {font-size: 1.1rem; font-weight: 700; text-align: center; margin-bottom: 0;}
     .vs-tag {font-size: 0.9rem; color: #ff4b4b; text-align: center; font-weight: 800; margin-top: 5px;}
-    .league-tag {font-size: 0.75rem; color: #888; text-align: center; text-transform: uppercase; letter-spacing: 1px;}
+    .league-tag {font-size: 0.85rem; color: #aaa; text-align: center; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px;}
     .metric-box {
         background-color: #1e1e1e; border: 1px solid #333; border-radius: 8px; 
         padding: 15px; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.2);
@@ -36,7 +38,6 @@ st.markdown("""
         margin-bottom: 8px; border-left: 3px solid #ff4b4b;
         transition: transform 0.2s;
     }
-    .news-card:hover {transform: translateX(5px);}
     .news-title {font-weight: 600; color: #fff; text-decoration: none; font-size: 0.95rem;}
     .news-date {color: #888; font-size: 0.75rem; margin-top: 4px;}
 </style>
@@ -123,26 +124,39 @@ def get_ownership(liga):
     except: return {}
 
 def get_news():
-    """Versión BLINDADA de Noticias"""
+    """Versión BLINDADA de Noticias V8.3"""
     try:
-        r = requests.get("https://www.espn.com/espn/rss/nba/news", headers={'User-Agent': 'Mozilla/5.0'}, timeout=4)
-        root = ET.fromstring(r.content)
-        items = []
-        for i in root.findall('./channel/item')[:6]:
-            # Extracción segura: si falla title o link, salta la noticia
-            title = i.find('title')
-            link = i.find('link')
-            pubDate = i.find('pubDate')
+        url = "https://www.espn.com/espn/rss/nba/news"
+        # Headers para simular navegador real
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+        }
+        response = requests.get(url, headers=headers, timeout=4)
+        
+        if response.status_code != 200:
+            return []
             
-            if title is not None and link is not None:
-                items.append({
-                    't': title.text, 
-                    'l': link.text, 
-                    'd': pubDate.text if pubDate is not None else ""
-                })
+        root = ET.fromstring(response.content)
+        items = []
+        # Intentamos leer items, si falla XML, capturamos
+        for i in root.findall('./channel/item')[:6]:
+            try:
+                title = i.find('title')
+                link = i.find('link')
+                pubDate = i.find('pubDate')
+                
+                if title is not None and link is not None:
+                    items.append({
+                        't': title.text, 
+                        'l': link.text, 
+                        'd': pubDate.text if pubDate is not None else ""
+                    })
+            except:
+                continue # Salta noticia corrupta individualmente
         return items
     except Exception: 
-        return [] # Retorna lista vacía si falla todo, no crashea
+        return [] # Si falla todo, retorna lista vacía y NO crashea
 
 def get_league_activity(liga):
     try:
@@ -204,7 +218,7 @@ soy_home = "Max" in matchup.home_team.team_name
 mi_equipo = matchup.home_team if soy_home else matchup.away_team
 rival = matchup.away_team if soy_home else matchup.home_team
 
-# HEADER
+# HEADER MEJORADO V8.3
 st.markdown(f"<div class='league-tag'>{nombre_liga}</div>", unsafe_allow_html=True)
 c1, c2, c3 = st.columns([5, 1, 5])
 with c1: st.markdown(f"<div class='team-name'>{mi_equipo.team_name}</div>", unsafe_allow_html=True)
@@ -321,16 +335,13 @@ with tab4:
                 if getattr(p, 'acquisitionType', []) or p.injuryStatus == 'OUT': continue
                 mt = check_match(p.proTeam, hoy_eqs)
                 if s_hoy and not mt: continue
-                
                 sc, s = calc_score(p, config, season_id)
                 if not s or sc < 5: continue
                 mpg = s.get('MIN', 0)
                 if mpg < min_m: continue
                 
-                # SOS
                 riv = hoy_rivs.get(mt, "") if mt else ""
                 si = get_sos_icon(riv, sos_map)
-                
                 od = own.get(p.playerId, {})
                 pch = od.get('percentChange', 0.0); pop = od.get('percentOwned', 0.0)
                 ti = "🔥🔥" if pch>2 else "🔥" if pch>0.5 else "📈" if pch>0 else "❄️"
@@ -384,6 +395,7 @@ with tab6:
     except: pass
     st.divider()
     st.subheader("📰 Noticias")
+    # Llamada segura a noticias
     news_list = get_nba_news()
     if news_list:
         for n in news_list:
@@ -391,4 +403,4 @@ with tab6:
     else:
         st.info("No hay noticias disponibles.")
 
-st.caption("🚀 Fantasy GM Architect v8.2 | Stability Patch")
+st.caption("🚀 Fantasy GM Architect v8.3 | Final Fix")
