@@ -3,7 +3,8 @@ import pandas as pd
 import requests
 import json
 from datetime import datetime, timedelta
-import xml.etree.ElementTree as ET
+import sys
+import os
 
 # --- 1. CONFIGURACIÓN Y CONEXIÓN ---
 from src.conectar import obtener_liga
@@ -19,11 +20,11 @@ st.set_page_config(
 # --- 2. ESTILOS VISUALES ---
 st.markdown("""
 <style>
-    .block-container {padding-top: 5rem; padding-bottom: 4rem;}
+    .block-container {padding-top: 2rem; padding-bottom: 4rem;}
     .stDataFrame {border: 1px solid #2b2b2b; border-radius: 5px;}
     .team-name {font-size: 1.1rem; font-weight: 700; text-align: center; margin-bottom: 0;}
     .vs-tag {font-size: 0.9rem; color: #ff4b4b; text-align: center; font-weight: 800; margin-top: 5px;}
-    .league-tag {font-size: 0.85rem; color: #aaa; text-align: center; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px;}
+    .league-tag {font-size: 0.75rem; color: #888; text-align: center; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px;}
     .metric-box {
         background-color: #1e1e1e; border: 1px solid #333; border-radius: 8px; 
         padding: 15px; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.2);
@@ -31,14 +32,6 @@ st.markdown("""
     .win-val {color: #00ff00; font-size: 1.5rem; font-weight: bold;}
     .lose-val {color: #ff4b4b; font-size: 1.5rem; font-weight: bold;}
     .label-txt {color: #ccc; font-size: 0.85rem;}
-    .news-card {
-        background-color: #262730; padding: 12px; border-radius: 6px; 
-        margin-bottom: 8px; border-left: 3px solid #ff4b4b;
-        transition: transform 0.2s;
-    }
-    .news-card:hover {transform: translateX(5px);}
-    .news-title {font-weight: 600; color: #fff; text-decoration: none; font-size: 0.95rem;}
-    .news-date {color: #888; font-size: 0.75rem; margin-top: 4px;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -47,10 +40,23 @@ st.markdown("""
 GRUPOS_EQUIPOS = [
     ['PHI', 'PHL', '76ERS'], ['UTA', 'UTAH', 'UTH'], ['NY', 'NYK', 'NYA'], ['GS', 'GSW', 'GOL'],
     ['NO', 'NOP', 'NOR'], ['SA', 'SAS', 'SAN'], ['PHO', 'PHX'], ['WAS', 'WSH'], ['CHA', 'CHO'],
-    ['BKN', 'BRK', 'BK'], ['LAL'], ['LAC'], 
+    ['BKN', 'BRK', 'BK'], ['LAL', 'LAC'], 
     ['TOR'], ['MEM'], ['MIA'], ['ORL'], ['MIN'], ['MIL'], ['DAL'], ['DEN'], ['HOU'], 
     ['DET'], ['IND'], ['CLE'], ['CHI'], ['ATL'], ['BOS'], ['OKC'], ['POR'], ['SAC']
 ]
+
+def normalizar_equipo(abrev):
+    # Convierte cualquier variante (SA, SAN) a la estándar del grupo (usamos la 2da posición si existe, o la 1ra)
+    # Para simplificar: Iteramos y devolvemos el PRIMER elemento del grupo como estándar, o el mismo si no encuentra
+    s = str(abrev).strip().upper()
+    for g in GRUPOS_EQUIPOS:
+        if s in g:
+            # Preferimos las versiones de 3 letras estándar NBA si es posible
+            for candidato in g:
+                if len(candidato) == 3 and candidato not in ['UTH', 'PHL', 'NYA', 'GOL', 'NOR', 'SAN']:
+                    return candidato
+            return g[0]
+    return s
 
 def son_mismo_equipo(eq1, eq2):
     r, a = str(eq1).strip().upper(), str(eq2).strip().upper()
@@ -94,23 +100,34 @@ def get_data_semanal():
 
 @st.cache_data(ttl=21600)
 def get_sos_map():
+    """Devuelve mapa normalizado de victorias {LAL: 0.55, SAS: 0.20...}"""
     try:
         d = requests.get("http://site.api.espn.com/apis/site/v2/sports/basketball/nba/standings", timeout=3).json()
         sos = {}
         for c in d.get('children', []):
             for team in c.get('standings', {}).get('entries', []):
-                abbr = team['team']['abbreviation']
+                raw_abbr = team['team']['abbreviation']
+                norm_abbr = normalizar_equipo(raw_abbr) # Normalizamos la clave
                 for s in team.get('stats', []):
-                    if s.get('name') == 'winPercent': sos[abbr] = s.get('value', 0.5); break
+                    if s.get('name') == 'winPercent': 
+                        sos[norm_abbr] = s.get('value', 0.5)
+                        # Guardamos también la raw por si acaso
+                        sos[raw_abbr] = s.get('value', 0.5)
+                        break
         return sos
     except: return {}
 
-def get_sos_icon(opponent, sos_map):
-    if not opponent: return ""
-    win_pct = sos_map.get(opponent, 0.5)
-    if win_pct > 0.60: return "🔴" 
-    if win_pct < 0.40: return "🟢" 
-    return "⚪"
+def get_sos_icon(opponent_raw, sos_map):
+    if not opponent_raw: return ""
+    # Normalizamos el rival antes de buscar en el mapa (SA -> SAS)
+    opp_norm = normalizar_equipo(opponent_raw)
+    
+    win_pct = sos_map.get(opp_norm, 0.5)
+    
+    # Lógica Semáforo
+    if win_pct >= 0.60: return "🔴" # Rival difícil (Top tier)
+    if win_pct <= 0.40: return "🟢" # Rival fácil (Tanking)
+    return "⚪" # Rival promedio
 
 def get_ownership(liga):
     try:
@@ -121,20 +138,6 @@ def get_ownership(liga):
         data = r.json()
         return {p['id']: p['player']['ownership'] for p in data.get('players', [])}
     except: return {}
-
-# --- RETORNO A LA FUNCIÓN SIMPLE (V7.1) QUE SÍ FUNCIONABA ---
-def get_news():
-    try:
-        url = "https://www.espn.com/espn/rss/nba/news"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(url, headers=headers, timeout=5)
-        root = ET.fromstring(response.content)
-        news = []
-        for item in root.findall('./channel/item')[:8]: 
-            news.append({'t': item.find('title').text, 'l': item.find('link').text, 'd': item.find('pubDate').text})
-        return news
-    except: 
-        return [] # Silencioso si falla
 
 def get_league_activity(liga):
     try:
@@ -313,7 +316,6 @@ with tab4:
                 if getattr(p, 'acquisitionType', []) or p.injuryStatus == 'OUT': continue
                 mt = check_match(p.proTeam, hoy_eqs)
                 if s_hoy and not mt: continue
-                
                 sc, s = calc_score(p, config, season_id)
                 if not s or sc < 5: continue
                 mpg = s.get('MIN', 0)
@@ -364,21 +366,22 @@ with tab5:
                 deltas.append({'Cat': c, 'Antes': round(vo,1), 'Ahora': round(vi,1), 'Delta': f"{d:+.1f} {ic}"})
             st.table(pd.DataFrame(deltas))
 
-# 6. INTEL
+# 6. INTEL (SEGURO Y SIN ERRORES)
 with tab6:
     st.subheader("🕵️ Actividad")
     try:
         df_act = get_league_activity(liga)
         if not df_act.empty and 'Error' not in df_act.columns: st.dataframe(df_act, use_container_width=True, hide_index=True)
-        else: st.info("Sin movimientos.")
+        else: st.info("Sin movimientos recientes.")
     except: pass
+    
     st.divider()
     st.subheader("📰 Noticias")
-    news_list = get_nba_news()
-    if news_list:
-        for n in news_list:
-            st.markdown(f"<div class='news-card'><a class='news-title' href='{n['l']}' target='_blank'>{n['t']}</a><div class='news-date'>{n['d']}</div></div>", unsafe_allow_html=True)
-    else:
-        st.info("No hay noticias disponibles.")
+    # Links estáticos a prueba de fallos
+    c_n1, c_n2 = st.columns(2)
+    with c_n1:
+        st.link_button("🌐 Ver en Rotoworld (NBC)", "https://www.rotowire.com/basketball/news.php")
+    with c_n2:
+        st.link_button("🌐 Ver en ESPN NBA", "https://www.espn.com/nba/news")
 
-st.caption("🚀 Fantasy GM Architect v8.4 | Back to Stability")
+st.caption("🚀 Fantasy GM Architect v9.0 | Final Stability Edition")
