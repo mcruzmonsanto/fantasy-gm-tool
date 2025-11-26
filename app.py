@@ -53,7 +53,7 @@ GRUPOS_EQUIPOS = [
 ]
 
 def son_mismo_equipo(eq1, eq2):
-    r, a = eq1.strip().upper(), eq2.strip().upper()
+    r, a = str(eq1).strip().upper(), str(eq2).strip().upper()
     if r == a: return True
     for g in GRUPOS_EQUIPOS:
         if r in g and a in g: return True
@@ -77,16 +77,17 @@ def get_data_semanal():
         d = lunes + timedelta(days=i)
         d_str = d.strftime("%Y%m%d"); d_fmt = d.strftime("%a %d")
         try:
-            data = requests.get(f"http://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={d_str}").json()
+            data = requests.get(f"http://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={d_str}", timeout=3).json()
             eqs = []
-            for e in data['events']:
+            for e in data.get('events', []):
                 if d_str == hoy_str:
-                    comps = e['competitions'][0]['competitors']
+                    comps = e.get('competitions', [])[0].get('competitors', [])
                     if len(comps) == 2:
                         ta, tb = comps[0]['team']['abbreviation'], comps[1]['team']['abbreviation']
                         rivales_map[ta] = tb; rivales_map[tb] = ta
                         equipos_hoy_detalle.extend([ta, tb])
-                for c in e['competitions'][0]['competitors']: eqs.append(c['team']['abbreviation'])
+                for c in e.get('competitions', [])[0].get('competitors', []): 
+                    eqs.append(c['team']['abbreviation'])
             calendario[d_fmt] = eqs
         except: calendario[d_fmt] = []
     return calendario, equipos_hoy_detalle, rivales_map
@@ -94,7 +95,7 @@ def get_data_semanal():
 @st.cache_data(ttl=21600)
 def get_sos_map():
     try:
-        d = requests.get("http://site.api.espn.com/apis/site/v2/sports/basketball/nba/standings").json()
+        d = requests.get("http://site.api.espn.com/apis/site/v2/sports/basketball/nba/standings", timeout=3).json()
         sos = {}
         for c in d.get('children', []):
             for team in c.get('standings', {}).get('entries', []):
@@ -104,22 +105,44 @@ def get_sos_map():
         return sos
     except: return {}
 
+def get_sos_icon(opponent, sos_map):
+    if not opponent: return ""
+    win_pct = sos_map.get(opponent, 0.5)
+    if win_pct > 0.60: return "🔴" 
+    if win_pct < 0.40: return "🟢" 
+    return "⚪"
+
 def get_ownership(liga):
     try:
         url = f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/fba/seasons/{liga.year}/segments/0/leagues/{liga.league_id}"
         filters = {"players": {"filterStatus": {"value": ["FREEAGENT","WAIVERS"]}, "limit": 500, "sortPercOwned": {"sortPriority": 1, "sortAsc": False}}}
         headers = {'x-fantasy-filter': json.dumps(filters)}
-        r = requests.get(url, params={'view': 'kona_player_info'}, headers=headers, cookies=liga.espn_request.cookies)
+        r = requests.get(url, params={'view': 'kona_player_info'}, headers=headers, cookies=liga.espn_request.cookies, timeout=5)
         data = r.json()
         return {p['id']: p['player']['ownership'] for p in data.get('players', [])}
     except: return {}
 
 def get_news():
+    """Versión BLINDADA de Noticias"""
     try:
         r = requests.get("https://www.espn.com/espn/rss/nba/news", headers={'User-Agent': 'Mozilla/5.0'}, timeout=4)
         root = ET.fromstring(r.content)
-        return [{'t': i.find('title').text, 'l': i.find('link').text, 'd': i.find('pubDate').text} for i in root.findall('./channel/item')[:6]]
-    except: return []
+        items = []
+        for i in root.findall('./channel/item')[:6]:
+            # Extracción segura: si falla title o link, salta la noticia
+            title = i.find('title')
+            link = i.find('link')
+            pubDate = i.find('pubDate')
+            
+            if title is not None and link is not None:
+                items.append({
+                    't': title.text, 
+                    'l': link.text, 
+                    'd': pubDate.text if pubDate is not None else ""
+                })
+        return items
+    except Exception: 
+        return [] # Retorna lista vacía si falla todo, no crashea
 
 def get_league_activity(liga):
     try:
@@ -128,14 +151,12 @@ def get_league_activity(liga):
         for act in activity:
             if hasattr(act, 'actions'):
                 for a in act.actions:
-                    # Intentamos parsear seguro
                     team = a[0].team_name if hasattr(a[0], 'team_name') else str(a[0])
                     player = a[2].name if hasattr(a[2], 'name') else str(a[2])
                     logs.append({'Fecha': datetime.fromtimestamp(act.date/1000).strftime('%d %H:%M'), 'Eq': team, 'Act': a[1], 'Jug': player})
         return pd.DataFrame(logs)
     except: return pd.DataFrame()
 
-# CORRECCIÓN AQUÍ: Argumentos ordenados correctamente
 def calc_score(player, config, season_id):
     s = player.stats.get(f"{season_id}_total", {}).get('avg', {}) or player.stats.get(f"{season_id}_projected", {}).get('avg', {})
     score = s.get('PTS',0) + s.get('REB',0)*1.2 + s.get('AST',0)*1.5 + s.get('STL',0)*2 + s.get('BLK',0)*2
@@ -226,7 +247,7 @@ with tab1:
                 mt = check_match(p.proTeam, hoy_eqs)
                 if mt:
                     opp = hoy_rivs.get(mt, "")
-                    si = "🔴" if sos_map.get(opp, 0.5) > 0.6 else "🟢" if sos_map.get(opp, 0.5) < 0.4 else "⚪"
+                    si = get_sos_icon(opp, sos_map)
                     sc, _ = calc_score(p, config, season_id)
                     l.append({'J': p.name, 'VS': f"{si} {opp}", 'FP': round(sc,1)})
         l = sorted(l, key=lambda x: x['FP'], reverse=True)[:limit_slots]
@@ -269,7 +290,7 @@ with tab2:
 with tab3:
     rost_data = []
     active_roster = [p for p in mi_equipo.roster if p.lineupSlot != 'IR']
-    sel_p = st.selectbox("Gráfico de Tendencia:", [p.name for p in active_roster], index=None, placeholder="Elige jugador...")
+    sel_p = st.selectbox("Gráfico:", [p.name for p in active_roster], index=None, placeholder="Elige jugador...")
     for p in active_roster:
         sc, s = calc_score(p, config, season_id)
         ic = "⛔" if p.injuryStatus == 'OUT' else "⚠️" if p.injuryStatus == 'DAY_TO_DAY' else "✅"
@@ -300,13 +321,16 @@ with tab4:
                 if getattr(p, 'acquisitionType', []) or p.injuryStatus == 'OUT': continue
                 mt = check_match(p.proTeam, hoy_eqs)
                 if s_hoy and not mt: continue
+                
                 sc, s = calc_score(p, config, season_id)
                 if not s or sc < 5: continue
                 mpg = s.get('MIN', 0)
                 if mpg < min_m: continue
                 
+                # SOS
                 riv = hoy_rivs.get(mt, "") if mt else ""
                 si = get_sos_icon(riv, sos_map)
+                
                 od = own.get(p.playerId, {})
                 pch = od.get('percentChange', 0.0); pop = od.get('percentOwned', 0.0)
                 ti = "🔥🔥" if pch>2 else "🔥" if pch>0.5 else "📈" if pch>0 else "❄️"
@@ -314,6 +338,8 @@ with tab4:
                 cats_hit = [c for c in necesidades if s.get(c,0) > 0]
                 if necesidades: sc += len(cats_hit) * 10
                 if pch > 1.5: sc += 15
+                
+                std = s.get('PTS',0)+s.get('REB',0)*1.2+s.get('AST',0)*1.5+s.get('STL',0)*2+s.get('BLK',0)*2
                 fppm = sc/mpg if mpg>0 else 0
                 ei = "💎" if fppm > 1.1 else ""
                 
@@ -358,7 +384,11 @@ with tab6:
     except: pass
     st.divider()
     st.subheader("📰 Noticias")
-    for n in get_nba_news():
-        st.markdown(f"<div class='news-card'><a class='news-title' href='{n['l']}' target='_blank'>{n['t']}</a><div class='news-date'>{n['d']}</div></div>", unsafe_allow_html=True)
+    news_list = get_nba_news()
+    if news_list:
+        for n in news_list:
+            st.markdown(f"<div class='news-card'><a class='news-title' href='{n['l']}' target='_blank'>{n['t']}</a><div class='news-date'>{n['d']}</div></div>", unsafe_allow_html=True)
+    else:
+        st.info("No hay noticias disponibles.")
 
-st.caption("🚀 Fantasy GM Architect v8.1 | Hotfix Edition")
+st.caption("🚀 Fantasy GM Architect v8.2 | Stability Patch")
