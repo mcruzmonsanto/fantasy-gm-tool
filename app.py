@@ -24,31 +24,22 @@ st.markdown("""
     .metric-card {background-color: #1E1E1E; padding: 15px; border-radius: 10px; border: 1px solid #333;}
     .big-font {font-size: 24px !important; font-weight: bold;}
     .stDataFrame {border: 1px solid #444;}
-    /* Colores para el Grid */
-    .day-win {background-color: rgba(0, 255, 0, 0.1); color: #00FF00;}
-    .day-lose {background-color: rgba(255, 75, 75, 0.1); color: #FF4B4B;}
 </style>
 """, unsafe_allow_html=True)
 
 # --- FUNCIONES AUXILIARES ---
 
-@st.cache_data(ttl=3600) # Guardamos esto en caché por 1 hora para que sea rápido
+@st.cache_data(ttl=3600) 
 def obtener_calendario_semanal_nba():
-    """
-    Descarga el calendario de la NBA para los 7 días de la semana actual (Lun-Dom).
-    Retorna un diccionario: {'2025-11-25': ['LAL', 'BOS'], ...}
-    """
-    # 1. Encontrar el Lunes de esta semana
+    """ Retorna diccionario: {'Lun 25': ['LAL', 'BOS'], ...} """
     hoy = datetime.now()
     inicio_semana = hoy - timedelta(days=hoy.weekday()) # Lunes
-    
     calendario_semanal = {}
     
-    # 2. Iterar 7 días
     for i in range(7):
         dia = inicio_semana + timedelta(days=i)
-        dia_str = dia.strftime("%Y%m%d") # Formato API
-        dia_fmt = dia.strftime("%a %d")  # Formato Visual (Lun 25)
+        dia_str = dia.strftime("%Y%m%d")
+        dia_fmt = dia.strftime("%a %d")
         
         url = f"http://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={dia_str}"
         equipos_dia = []
@@ -60,17 +51,10 @@ def obtener_calendario_semanal_nba():
                         abrev = competitor.get('team', {}).get('abbreviation')
                         if abrev: equipos_dia.append(abrev)
         except: pass
-        
         calendario_semanal[dia_fmt] = equipos_dia
-        
     return calendario_semanal
 
 def obtener_equipos_hoy():
-    # Usamos la función cacheada para extraer solo hoy
-    cal = obtener_calendario_semanal_nba()
-    hoy_fmt = datetime.now().strftime("%a %d")
-    # Buscamos la clave que coincida con hoy (puede variar por idioma del server, así que buscamos fecha)
-    # Simplificación: Hacemos request directo para hoy para asegurar consistencia en Waiver
     hoy_str = datetime.now().strftime("%Y%m%d")
     url = f"http://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={hoy_str}"
     equipos = []
@@ -83,6 +67,22 @@ def obtener_equipos_hoy():
                     if abrev: equipos.append(abrev)
     except: pass
     return equipos
+
+def obtener_limite_titulares(liga):
+    """
+    Calcula cuántos jugadores PUEDEN sumar stats realmente (Active Slots).
+    Ignora 'BE' (Bench) e 'IR'.
+    """
+    try:
+        # settings.position_slot_counts es un dict ej: {'PG': 1, 'SG': 1, 'BE': 3...}
+        slots = liga.settings.position_slot_counts
+        total_activos = 0
+        for pos, count in slots.items():
+            if pos not in ['BE', 'IR']:
+                total_activos += count
+        return total_activos
+    except:
+        return 10 # Fallback estándar si falla la lectura
 
 def calcular_stats_manuales(lineup):
     totales = {'PTS':0, 'REB':0, 'AST':0, 'STL':0, 'BLK':0, '3PTM':0, 'TO':0, 'DD':0, 'FGM':0, 'FGA':0, 'FTM':0, 'FTA':0}
@@ -141,7 +141,7 @@ def obtener_datos_ownership(liga):
                 'percentChange': ownership.get('percentChange', 0.0)
             }
         return ownership_map
-    except Exception as e: return {}
+    except: return {}
 
 # --- INTERFAZ PRINCIPAL ---
 
@@ -162,7 +162,7 @@ if not liga:
     st.stop()
 
 # ==========================================
-# SECCIÓN 1: THE WEEKLY GRID (NUEVO)
+# SECCIÓN 1: THE WEEKLY GRID (CORREGIDO)
 # ==========================================
 st.header("📅 Planificación Semanal (The Grid)")
 
@@ -176,13 +176,16 @@ for m in box_scores:
     elif PALABRA_CLAVE.lower() in m.away_team.team_name.lower(): mi_matchup = m; soy_home = False; break
 
 if mi_matchup:
-    with st.spinner("Calculando Matrix de Calendario..."):
+    with st.spinner("Calculando Volumen Real (Start vs Bench)..."):
         calendario = obtener_calendario_semanal_nba()
         
         mi_equipo_obj = mi_matchup.home_team if soy_home else mi_matchup.away_team
         rival_obj = mi_matchup.away_team if soy_home else mi_matchup.home_team
         
-        # Analizamos día por día
+        # OBTENER LÍMITE DE TITULARES
+        max_starters = obtener_limite_titulares(liga)
+        st.caption(f"ℹ️ Límite de Titulares detectado: {max_starters} jugadores por día.")
+
         data_grid = []
         dias_semana = list(calendario.keys())
         
@@ -190,46 +193,56 @@ if mi_matchup:
         fila_rival = ["RIVAL"]
         fila_diff = ["DIFF"]
         
-        total_yo = 0
-        total_rival = 0
+        total_yo_real = 0
+        total_rival_real = 0
 
         for dia in dias_semana:
             equipos_juegan = calendario[dia]
             
-            # Contar mis jugadores activos
-            count_yo = 0
+            # --- CÁLCULO MIO ---
+            disponibles_yo = 0
             for p in mi_equipo_obj.roster:
                 if p.injuryStatus != 'OUT' and p.proTeam in equipos_juegan and p.lineupSlot != 'IR':
-                    count_yo += 1
+                    disponibles_yo += 1
             
-            # Contar rival
-            count_rival = 0
+            # Aplicamos el CAP (Si tengo 12, solo cuento 10)
+            activos_yo = min(disponibles_yo, max_starters)
+            # Formato visual: "10" o "12(Cap)"
+            txt_yo = f"{activos_yo}"
+            if disponibles_yo > max_starters: txt_yo = f"{activos_yo} (de {disponibles_yo})"
+
+            # --- CÁLCULO RIVAL ---
+            disponibles_rival = 0
             for p in rival_obj.roster:
                 if p.injuryStatus != 'OUT' and p.proTeam in equipos_juegan and p.lineupSlot != 'IR':
-                    count_rival += 1
+                    disponibles_rival += 1
             
-            fila_yo.append(count_yo)
-            fila_rival.append(count_rival)
+            activos_rival = min(disponibles_rival, max_starters)
+            txt_rival = f"{activos_rival}"
+            if disponibles_rival > max_starters: txt_rival = f"{activos_rival} (de {disponibles_rival})"
             
-            diff = count_yo - count_rival
+            fila_yo.append(txt_yo)
+            fila_rival.append(txt_rival)
+            
+            diff = activos_yo - activos_rival
             simbolo = "✔️" if diff > 0 else "⚠️" if diff < 0 else "="
             fila_diff.append(f"{diff} {simbolo}")
             
-            total_yo += count_yo
-            total_rival += count_rival
+            total_yo_real += activos_yo
+            total_rival_real += activos_rival
 
         # Totales
-        fila_yo.append(total_yo)
-        fila_rival.append(total_rival)
-        fila_diff.append(total_yo - total_rival)
+        fila_yo.append(total_yo_real)
+        fila_rival.append(total_rival_real)
+        fila_diff.append(total_yo_real - total_rival_real)
         
-        cols = ["EQUIPO"] + dias_semana + ["TOTAL"]
+        cols = ["EQUIPO"] + dias_semana + ["VOLUMEN"]
         df_grid = pd.DataFrame([fila_yo, fila_rival, fila_diff], columns=cols)
         
         st.dataframe(df_grid, use_container_width=True)
         
-        if total_yo < total_rival:
-            st.error(f"⚠️ ALERTA DE VOLUMEN: Juegas {total_rival - total_yo} partidos MENOS que tu rival esta semana.")
+        if total_yo_real < total_rival_real:
+            st.error(f"⚠️ PELIGRO DE VOLUMEN: El rival tiene {total_rival_real - total_yo_real} titularidades más que tú.")
 
 # ==========================================
 # SECCIÓN 2: MATCHUP EN VIVO
@@ -378,4 +391,4 @@ if st.button("🔎 Buscar Joyas"):
         else: st.error("No se encontraron jugadores.")
 
 st.markdown("---")
-st.caption("🚀 Fantasy GM Architect v3.0 | The Weekly Grid")
+st.caption("🚀 Fantasy GM Architect v3.1 | Starter Cap Fix")
