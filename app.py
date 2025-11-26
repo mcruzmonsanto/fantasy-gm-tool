@@ -15,45 +15,46 @@ st.markdown("""
 <style>
     .metric-card {background-color: #1E1E1E; padding: 15px; border-radius: 10px; border: 1px solid #333;}
     .stDataFrame {border: 1px solid #444;}
-    .diff-pos {color: #00FF00; font-weight: bold;}
-    .diff-neg {color: #FF4B4B; font-weight: bold;}
 </style>
 """, unsafe_allow_html=True)
 
-# --- MAPEO UNIVERSAL V4 ---
-MAPEO_EQUIPOS = {
-    'GS': 'GSW', 'NO': 'NOP', 'NY': 'NYK', 'SA': 'SAS', 'WSH': 'WAS', 'UTAH': 'UTA', 'PHO': 'PHX',
-    'GSW': 'GSW', 'NOP': 'NOP', 'NYK': 'NYK', 'SAS': 'SAS', 'WAS': 'WAS', 'UTA': 'UTA', 'PHX': 'PHX',
-    'BKN': 'BKN', 'BRK': 'BKN', 'BK': 'BKN',
-    'CHA': 'CHA', 'CHO': 'CHA', # Charlotte variante
-    'LAC': 'LAC', 'LAL': 'LAL', 'CHI': 'CHI', 'CLE': 'CLE', 'DAL': 'DAL', 'DEN': 'DEN', 'DET': 'DET',
-    'HOU': 'HOU', 'IND': 'IND', 'MEM': 'MEM', 'MIA': 'MIA', 'MIL': 'MIL', 'MIN': 'MIN', 'OKC': 'OKC',
-    'ORL': 'ORL', 'PHI': 'PHI', 'POR': 'POR', 'SAC': 'SAC', 'TOR': 'TOR', 'ATL': 'ATL', 'BOS': 'BOS'
-}
+# --- SISTEMA DE ALIAS (INFALIBLE) ---
+# Agrupamos todas las variantes posibles de cada equipo en una lista
+GRUPOS_EQUIPOS = [
+    ['PHI', 'PHL', '76ERS'],          # Philadelphia
+    ['UTA', 'UTAH', 'UTH'],           # Utah
+    ['NY', 'NYK', 'NYA'],             # New York
+    ['GS', 'GSW', 'GOL'],             # Golden State
+    ['NO', 'NOP', 'NOR'],             # New Orleans
+    ['SA', 'SAS', 'SAN'],             # San Antonio
+    ['PHO', 'PHX'],                   # Phoenix
+    ['WAS', 'WSH'],                   # Washington
+    ['CHA', 'CHO'],                   # Charlotte
+    ['BKN', 'BRK', 'BK'],             # Brooklyn
+    ['LAL', 'LAC'],                   # CUIDADO: Lakers y Clippers son distintos, no agrupar
+    # El resto suele ser estable, pero por si acaso
+    ['TOR'], ['MEM'], ['MIA'], ['ORL'], ['MIN'], ['MIL'], ['DAL'], ['DEN'], ['HOU'], 
+    ['DET'], ['IND'], ['CLE'], ['CHI'], ['ATL'], ['BOS'], ['OKC'], ['POR'], ['SAC']
+]
 
-def normalizar_equipo(abrev):
-    if not abrev: return "N/A"
-    clean = abrev.strip().upper() # Limpieza de espacios
-    return MAPEO_EQUIPOS.get(clean, clean)
+def son_mismo_equipo(eq_roster, eq_api):
+    """Retorna True si ambos códigos pertenecen al mismo equipo (Alias)"""
+    r = eq_roster.strip().upper()
+    a = eq_api.strip().upper()
+    
+    if r == a: return True
+    
+    # Buscamos si comparten grupo
+    for grupo in GRUPOS_EQUIPOS:
+        if r in grupo and a in grupo:
+            return True
+    return False
 
-def verificar_juego_hoy(equipo_roster, lista_equipos_hoy_raw):
-    if not equipo_roster: return False
-    eq_roster = equipo_roster.strip().upper()
-    lista_hoy = [x.strip().upper() for x in lista_equipos_hoy_raw]
-    
-    # 1. Coincidencia Directa
-    if eq_roster in lista_hoy: return True
-    
-    # 2. Roster -> Calendario
-    traduccion = MAPEO_EQUIPOS.get(eq_roster)
-    if traduccion and traduccion in lista_hoy: return True
-    
-    # 3. Calendario -> Roster
-    for cal_eq in lista_hoy:
-        trad_cal = MAPEO_EQUIPOS.get(cal_eq, cal_eq)
-        if trad_cal == eq_roster: return True
-        if traduccion and trad_cal == traduccion: return True
-        
+def verificar_juego_hoy_nuclear(equipo_roster, lista_equipos_hoy_api):
+    """Verifica contra toda la lista de hoy usando alias"""
+    for eq_api in lista_equipos_hoy_api:
+        if son_mismo_equipo(equipo_roster, eq_api):
+            return True
     return False
 
 # --- FUNCIONES ---
@@ -149,10 +150,10 @@ for m in box_scores:
     if PALABRA_CLAVE.lower() in m.home_team.team_name.lower(): mi_matchup = m; soy_home = True; break
     elif PALABRA_CLAVE.lower() in m.away_team.team_name.lower(): mi_matchup = m; soy_home = False; break
 
-# 1. GRID SEMANAL (V4.0)
+# 1. GRID SEMANAL (V4.1)
 st.header(f"📅 Planificación Semanal (Límite: {limit_slots})")
 if mi_matchup:
-    with st.spinner("Analizando..."):
+    with st.spinner("Analizando con Alias..."):
         calendario = obtener_calendario_semanal_nba()
         mi_equipo_obj = mi_matchup.home_team if soy_home else mi_matchup.away_team
         rival_obj = mi_matchup.away_team if soy_home else mi_matchup.home_team
@@ -163,15 +164,18 @@ if mi_matchup:
         
         for dia in dias_keys:
             equipos_juegan = calendario[dia]
+            
+            # YO - CONTEO NUCLEAR
             disp_yo = 0
             for p in mi_equipo_obj.roster:
                 if p.lineupSlot != 'IR': 
-                    if verificar_juego_hoy(p.proTeam, equipos_juegan): disp_yo += 1
+                    if verificar_juego_hoy_nuclear(p.proTeam, equipos_juegan): disp_yo += 1
             
+            # RIVAL - CONTEO NUCLEAR
             disp_riv = 0
             for p in rival_obj.roster:
                 if p.lineupSlot != 'IR':
-                    if verificar_juego_hoy(p.proTeam, equipos_juegan): disp_riv += 1
+                    if verificar_juego_hoy_nuclear(p.proTeam, equipos_juegan): disp_riv += 1
             
             usados_yo = min(disp_yo, limit_slots)
             usados_riv = min(disp_riv, limit_slots)
@@ -192,29 +196,23 @@ if mi_matchup:
         df_grid = pd.DataFrame([fila_yo, fila_rival, fila_diff], columns=["EQUIPO"] + dias_keys + ["TOTAL"])
         st.dataframe(df_grid, use_container_width=True)
 
-        # --- CAZAFANTASMAS (DEBUGGING) ---
-        with st.expander("👻 ¿Faltan Jugadores? (Abrir Aquí)", expanded=True):
+        # --- CAZAFANTASMAS 2.0 (Ahora con Alias) ---
+        with st.expander("👻 Debugger de Alias"):
             dia_opciones = list(calendario.keys())
-            # Intentamos seleccionar Viernes por defecto para agilizar tu test
             idx_fri = next((i for i, d in enumerate(dia_opciones) if 'Fri' in d), 0)
             dia_debug = st.selectbox("Analizar Día:", dia_opciones, index=idx_fri)
             
             equipos_api = calendario[dia_debug]
-            st.code(f"Equipos en API ({dia_debug}): {', '.join(equipos_api)}")
+            st.code(f"API: {', '.join(equipos_api)}")
             
-            debug_rows = []
+            debug_list = []
             for p in mi_equipo_obj.roster:
                 if p.lineupSlot == 'IR': continue
-                juega = verificar_juego_hoy(p.proTeam, equipos_api)
-                status = "✅ JUEGA" if juega else "❌ NO"
-                debug_rows.append({
-                    "Jugador": p.name,
-                    "Equipo": f"'{p.proTeam}'", # Comillas para ver espacios
-                    "¿Detectado?": status
-                })
-            st.dataframe(pd.DataFrame(debug_rows))
+                juega = verificar_juego_hoy_nuclear(p.proTeam, equipos_api)
+                debug_list.append({'J': p.name, 'Eq': p.proTeam, 'Juega?': "✅" if juega else "❌"})
+            st.dataframe(pd.DataFrame(debug_list).style.applymap(lambda v: 'color:red' if '❌' in v else 'color:green', subset=['Juega?']))
 
-# Resto de secciones...
+# Resto de secciones igual...
 st.markdown("---")
 c1, c2 = st.columns(2)
 with c1:
@@ -245,6 +243,7 @@ with c2:
         df_r = pd.DataFrame(dr).sort_values(by='Scr', ascending=True)
         st.dataframe(df_r, use_container_width=True, height=300)
 
+# Waiver King
 st.markdown("---")
 st.header("💎 Waiver King")
 fc1, fc2 = st.columns(2)
@@ -260,7 +259,7 @@ if st.button("🔎 Buscar Joyas"):
         for p in fa:
             if getattr(p, 'acquisitionType', []) or p.injuryStatus == 'OUT': continue
             if s_hoy and eq_hoy:
-                if not verificar_juego_hoy(p.proTeam, eq_hoy): continue
+                if not verificar_juego_hoy_nuclear(p.proTeam, eq_hoy): continue
             stt = p.stats.get(f"{season_id}_total", {}).get('avg', {})
             if not stt: stt = p.stats.get(f"{season_id}_projected", {}).get('avg', {})
             if not stt: continue
@@ -286,4 +285,4 @@ if st.button("🔎 Buscar Joyas"):
             except: st.dataframe(df_w)
         else: st.error("Sin resultados.")
 
-st.caption("🚀 Fantasy GM Architect v4.0 | Ghostbuster Mode")
+st.caption("🚀 Fantasy GM Architect v4.1 | Nuclear Alias Fix")
