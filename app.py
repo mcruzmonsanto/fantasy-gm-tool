@@ -6,300 +6,277 @@ from datetime import datetime, timedelta
 import sys
 import os
 
+# --- 1. CONFIGURACIÓN INICIAL ---
 from src.conectar import obtener_liga
 from config.credenciales import LIGAS
 
-st.set_page_config(page_title="Fantasy GM Pro", page_icon="🏀", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(
+    page_title="Fantasy GM Pro", 
+    page_icon="🏀", 
+    layout="wide", 
+    initial_sidebar_state="collapsed" # Colapsado en móvil para ganar espacio
+)
 
+# CSS para móviles y modo oscuro
 st.markdown("""
 <style>
-    .metric-card {background-color: #1E1E1E; padding: 15px; border-radius: 10px; border: 1px solid #333;}
-    .stDataFrame {border: 1px solid #444;}
+    .stDataFrame {border: 1px solid #333;}
+    .block-container {padding-top: 1rem; padding-bottom: 1rem;} /* Menos margen arriba */
+    div[data-testid="stExpander"] details summary p {font-weight: bold;}
 </style>
 """, unsafe_allow_html=True)
 
-# --- SISTEMA DE ALIAS CORREGIDO V4.5 ---
-# ¡LAL y LAC están ahora DIVORCIADOS!
+# --- 2. CEREBRO DE DATOS (LÓGICA CENTRAL) ---
+
+# Grupos de Alias para unificar nombres de equipos (LAL y LAC separados)
 GRUPOS_EQUIPOS = [
-    ['PHI', 'PHL', '76ERS'], 
-    ['UTA', 'UTAH', 'UTH'], 
-    ['NY', 'NYK', 'NYA'], 
-    ['GS', 'GSW', 'GOL'],
-    ['NO', 'NOP', 'NOR'], 
-    ['SA', 'SAS', 'SAN'], 
-    ['PHO', 'PHX'], 
-    ['WAS', 'WSH'], 
-    ['CHA', 'CHO'],
-    ['BKN', 'BRK', 'BK'], 
-    # CORRECCIÓN: Grupos separados para LA
-    ['LAL'], 
-    ['LAC'],
-    # Resto de equipos
+    ['PHI', 'PHL', '76ERS'], ['UTA', 'UTAH', 'UTH'], ['NY', 'NYK', 'NYA'], ['GS', 'GSW', 'GOL'],
+    ['NO', 'NOP', 'NOR'], ['SA', 'SAS', 'SAN'], ['PHO', 'PHX'], ['WAS', 'WSH'], ['CHA', 'CHO'],
+    ['BKN', 'BRK', 'BK'], ['LAL'], ['LAC'],
     ['TOR'], ['MEM'], ['MIA'], ['ORL'], ['MIN'], ['MIL'], ['DAL'], ['DEN'], ['HOU'], 
     ['DET'], ['IND'], ['CLE'], ['CHI'], ['ATL'], ['BOS'], ['OKC'], ['POR'], ['SAC']
 ]
 
 def son_mismo_equipo(eq_roster, eq_api):
-    r = eq_roster.strip().upper()
-    a = eq_api.strip().upper()
-    
-    # Coincidencia exacta
+    """Compara si dos siglas pertenecen a la misma franquicia."""
+    r, a = eq_roster.strip().upper(), eq_api.strip().upper()
     if r == a: return True
-    
-    # Búsqueda en grupos de familia
     for grupo in GRUPOS_EQUIPOS:
         if r in grupo and a in grupo: return True
-        
     return False
 
-def obtener_match_exacto(equipo_roster, lista_equipos_hoy_api):
-    for eq_api in lista_equipos_hoy_api:
-        if son_mismo_equipo(equipo_roster, eq_api): 
-            return eq_api
-    return None
+def check_juego_hoy(equipo_roster, lista_equipos_api):
+    """Verifica si el equipo tiene partido hoy contra la lista de la API."""
+    for eq_api in lista_equipos_api:
+        if son_mismo_equipo(equipo_roster, eq_api): return True
+    return False
 
-# --- FUNCIONES ---
 @st.cache_data(ttl=3600) 
-def obtener_calendario_semanal_nba():
+def get_calendario_semanal():
+    """Descarga el calendario de Lun a Dom y lo guarda en caché por 1 hora."""
     hoy = datetime.now()
-    inicio_semana = hoy - timedelta(days=hoy.weekday())
-    calendario_semanal = {}
+    lunes = hoy - timedelta(days=hoy.weekday())
+    calendario = {}
+    
     for i in range(7):
-        dia = inicio_semana + timedelta(days=i)
-        dia_str = dia.strftime("%Y%m%d"); dia_fmt = dia.strftime("%a %d")
-        url = f"http://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={dia_str}"
-        equipos_dia = []
+        dia = lunes + timedelta(days=i)
+        dia_api = dia.strftime("%Y%m%d")
+        dia_fmt = dia.strftime("%a %d") # Ej: Fri 28
+        
         try:
+            url = f"http://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={dia_api}"
             data = requests.get(url).json()
-            for event in data.get('events', []):
-                for comp in event.get('competitions', []):
-                    for competitor in comp.get('competitors', []):
-                        abrev = competitor.get('team', {}).get('abbreviation')
-                        if abrev: equipos_dia.append(abrev)
-        except: pass
-        calendario_semanal[dia_fmt] = equipos_dia
-    return calendario_semanal
+            equipos = []
+            for ev in data.get('events', []):
+                for comp in ev.get('competitions', []):
+                    for c in comp.get('competitors', []):
+                        equipos.append(c.get('team', {}).get('abbreviation'))
+            calendario[dia_fmt] = equipos
+        except:
+            calendario[dia_fmt] = []
+    return calendario
 
-def obtener_equipos_hoy_simple():
-    hoy_str = datetime.now().strftime("%Y%m%d")
-    url = f"http://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={hoy_str}"
-    equipos = []
+def get_ownership_data(liga):
+    """Obtiene %Owned y Trend desde la API oculta de ESPN."""
     try:
-        data = requests.get(url).json()
-        for event in data.get('events', []):
-            for comp in event.get('competitions', []):
-                for competitor in comp.get('competitors', []):
-                    abrev = competitor.get('team', {}).get('abbreviation')
-                    if abrev: equipos.append(abrev)
-    except: pass
-    return equipos
-
-def obtener_datos_ownership(liga):
-    try:
-        year = liga.year; league_id = liga.league_id
-        url = f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/fba/seasons/{year}/segments/0/leagues/{league_id}"
+        url = f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/fba/seasons/{liga.year}/segments/0/leagues/{liga.league_id}"
         filters = {"players": {"filterStatus": {"value": ["FREEAGENT", "WAIVERS"]}, "limit": 500, "sortPercOwned": {"sortPriority": 1, "sortAsc": False}}}
         headers = {'x-fantasy-filter': json.dumps(filters)}
-        params = {'view': 'kona_player_info'}
-        cookies = liga.espn_request.cookies
-        r = requests.get(url, params=params, headers=headers, cookies=cookies)
+        r = requests.get(url, params={'view': 'kona_player_info'}, headers=headers, cookies=liga.espn_request.cookies)
         data = r.json()
-        own_map = {}
-        for p in data.get('players', []):
-            pid = p.get('id')
-            own = p.get('player', {}).get('ownership', {})
-            own_map[pid] = {'percentOwned': own.get('percentOwned', 0.0), 'percentChange': own.get('percentChange', 0.0)}
-        return own_map
+        return {p['id']: p['player']['ownership'] for p in data.get('players', [])}
     except: return {}
 
-def calcular_stats_manuales(lineup):
-    totales = {'PTS':0, 'REB':0, 'AST':0, 'STL':0, 'BLK':0, '3PTM':0, 'TO':0, 'DD':0, 'FGM':0, 'FGA':0, 'FTM':0, 'FTA':0}
+def calcular_stats_matchup(lineup):
+    """Suma stats de titulares activos."""
+    totales = {k: 0 for k in ['PTS','REB','AST','STL','BLK','3PTM','TO','DD','FGM','FGA','FTM','FTA']}
     for p in lineup:
-        if p.slot_position in ['BE', 'IR']: continue 
-        stats = {}
-        if p.stats:
-            for k, v in p.stats.items():
-                if 'total' in v: stats = v['total']; break
-        if not stats: continue
-        totales['PTS'] += stats.get('PTS', 0); totales['REB'] += stats.get('REB', 0); totales['AST'] += stats.get('AST', 0)
-        totales['STL'] += stats.get('STL', 0); totales['BLK'] += stats.get('BLK', 0); totales['TO'] += stats.get('TO', 0)
-        totales['DD'] += stats.get('DD', 0); totales['3PTM'] += stats.get('3PM', stats.get('3PTM', 0))
-        totales['FGM'] += stats.get('FGM', 0); totales['FGA'] += stats.get('FGA', 0)
-        totales['FTM'] += stats.get('FTM', 0); totales['FTA'] += stats.get('FTA', 0)
+        if p.slot_position in ['BE', 'IR']: continue
+        s = p.stats.get('total', {}) if 'total' in p.stats else {} # Fix rápido de estructura
+        # A veces ESPN cambia la estructura, intentamos leer directo
+        if not s and p.stats: # Intento recursivo simple
+             for k, v in p.stats.items():
+                if isinstance(v, dict) and 'total' in v: s = v['total']; break
+        
+        if not s: continue
+        
+        for cat in totales:
+            if cat in ['FGM','FGA','FTM','FTA']: totales[cat] += s.get(cat, 0)
+            elif cat == '3PTM': totales[cat] += s.get('3PM', s.get('3PTM', 0))
+            else: totales[cat] += s.get(cat, 0)
+            
     if totales['FGA'] > 0: totales['FG%'] = totales['FGM'] / totales['FGA']
     if totales['FTA'] > 0: totales['FT%'] = totales['FTM'] / totales['FTA']
     return totales
 
-# --- INTERFAZ ---
-st.sidebar.header("⚙️ Centro de Mando")
-nombre_liga = st.sidebar.selectbox("Selecciona tu Liga:", list(LIGAS.keys()))
-st.sidebar.markdown("---")
-limit_slots = st.sidebar.number_input("⚔️ Slots Activos (Titulares)", min_value=5, max_value=20, value=10)
+# --- 3. INTERFAZ DE USUARIO (UI) ---
 
-if st.sidebar.button("🔄 Actualizar Datos"): st.cache_data.clear()
+# Sidebar
+with st.sidebar:
+    st.header("⚙️ Configuración")
+    nombre_liga = st.selectbox("Liga", list(LIGAS.keys()))
+    st.divider()
+    limit_slots = st.number_input("Titulares Máximos", 5, 20, 10)
+    excluir_out = st.checkbox("Ignorar 'OUT' en Grid", True)
+    if st.button("🔄 Refrescar"): st.cache_data.clear()
 
+# Carga de datos
 config = LIGAS[nombre_liga]
 liga = obtener_liga(nombre_liga)
 season_id = config['year']
 
-st.title(f"🏀 GM Dashboard: {nombre_liga}")
-if not liga: st.error("Error de conexión."); st.stop()
+if not liga: st.error("Error de conexión"); st.stop()
 
+# Buscamos Matchup
 box_scores = liga.box_scores()
-mi_matchup = None; soy_home = False; PALABRA_CLAVE = "Max"
-for m in box_scores:
-    if PALABRA_CLAVE.lower() in m.home_team.team_name.lower(): mi_matchup = m; soy_home = True; break
-    elif PALABRA_CLAVE.lower() in m.away_team.team_name.lower(): mi_matchup = m; soy_home = False; break
+matchup = next((m for m in box_scores if "Max" in m.home_team.team_name or "Max" in m.away_team.team_name), None)
+soy_home = matchup and "Max" in matchup.home_team.team_name
 
-# 1. GRID SEMANAL
-st.header(f"📅 Planificación Semanal (Límite: {limit_slots})")
+if not matchup: st.warning("No hay matchup activo."); st.stop()
 
-col_conf1, col_conf2 = st.columns([3,1])
-with col_conf2:
-    excluir_out = st.checkbox("Ignorar 'OUT' futuros", value=False, help="Si se marca, no cuenta jugadores lesionados para días futuros.")
+mi_equipo = matchup.home_team if soy_home else matchup.away_team
+rival = matchup.away_team if soy_home else matchup.home_team
 
-if mi_matchup:
-    with st.spinner("Analizando..."):
-        calendario = obtener_calendario_semanal_nba()
-        mi_equipo_obj = mi_matchup.home_team if soy_home else mi_matchup.away_team
-        rival_obj = mi_matchup.away_team if soy_home else mi_matchup.home_team
+# Título Compacto
+st.markdown(f"### 🏀 {nombre_liga} | {mi_equipo.team_name}")
+
+# --- MÓDULO 1: GRID SEMANAL (Compacto) ---
+with st.expander("📅 Planificación Semanal (Grid)", expanded=True):
+    calendario = get_calendario_semanal()
+    rows = {"YO": [], "RIVAL": [], "DIFF": []}
+    tot_y, tot_r = 0, 0
+    
+    for dia, equipos_api in calendario.items():
+        # Conteo Yo
+        cy = sum(1 for p in mi_equipo.roster if p.lineupSlot != 'IR' and 
+                 (not excluir_out or p.injuryStatus != 'OUT') and 
+                 check_juego_hoy(p.proTeam, equipos_api))
         
-        fila_yo = ["YO"]; fila_rival = ["RIVAL"]; fila_diff = ["DIFF"]
-        total_yo = 0; total_rival = 0
-        dias_keys = list(calendario.keys())
+        # Conteo Rival
+        cr = sum(1 for p in rival.roster if p.lineupSlot != 'IR' and 
+                 (not excluir_out or p.injuryStatus != 'OUT') and 
+                 check_juego_hoy(p.proTeam, equipos_api))
         
-        for dia in dias_keys:
-            equipos_juegan = calendario[dia]
+        # Cap
+        uy, ur = min(cy, limit_slots), min(cr, limit_slots)
+        rows["YO"].append(uy)
+        rows["RIVAL"].append(ur)
+        
+        diff = uy - ur
+        icon = "✅" if diff > 0 else "⚠️" if diff < 0 else "="
+        rows["DIFF"].append(f"{diff} {icon}")
+        
+        tot_y += uy; tot_r += ur
+        
+    # Totales
+    rows["YO"].append(tot_y); rows["RIVAL"].append(tot_r)
+    dt = tot_y - tot_r
+    rows["DIFF"].append(f"{dt} {'🔥' if dt > 0 else '💀'}")
+    
+    df_grid = pd.DataFrame(rows, index=list(calendario.keys()) + ["TOTAL"]).T
+    st.dataframe(df_grid, use_container_width=True)
+
+# --- MÓDULO 2: PESTAÑAS TÁCTICAS (Optimizado para Móvil) ---
+tab1, tab2, tab3 = st.tabs(["⚔️ Matchup", "🪓 Cortes", "💎 Waiver"])
+
+necesidades = []
+
+# TAB 1: MATCHUP
+with tab1:
+    ms = calcular_stats_matchup(matchup.home_lineup if soy_home else matchup.away_lineup)
+    rs = calcular_stats_matchup(matchup.away_lineup if soy_home else matchup.home_lineup)
+    
+    data_m = []
+    w, l, t = 0, 0, 0
+    for c in config['categorias']:
+        k = '3PTM' if c == '3PTM' and '3PTM' not in ms else c
+        m, r = ms.get(k, 0), rs.get(k, 0)
+        diff = m - r if c != 'TO' else r - m
+        
+        if diff > 0: stt = "🟢"; w += 1
+        elif diff < 0: stt = "🔴"; l += 1; necesidades.append(c)
+        else: stt = "🟡"; t += 1
+        
+        fmt_m = f"{m:.3f}" if c in ['FG%','FT%'] else f"{m:.0f}"
+        fmt_r = f"{r:.3f}" if c in ['FG%','FT%'] else f"{r:.0f}"
+        data_m.append([c, fmt_m, fmt_r, f"{diff:.2f}", stt])
+        
+    st.info(f"🏆 Marcador: {w}-{l}-{t} | 🎯 Faltan: {', '.join(necesidades)}")
+    st.dataframe(pd.DataFrame(data_m, columns=['Cat','Yo','Rival','Diff','W']), use_container_width=True, hide_index=True)
+
+# TAB 2: EL VERDUGO
+with tab2:
+    roster_data = []
+    for p in mi_equipo.roster:
+        s = p.stats.get(f"{season_id}_total", {}).get('avg', {}) or p.stats.get(f"{season_id}_projected", {}).get('avg', {})
+        score = s.get('PTS',0) + s.get('REB',0)*1.2 + s.get('AST',0)*1.5 + s.get('STL',0)*2 + s.get('BLK',0)*2
+        if 'DD' in config['categorias']: score += s.get('DD', 0) * 5
+        
+        icon = "⛔" if p.injuryStatus == 'OUT' else "⚠️" if p.injuryStatus == 'DAY_TO_DAY' else "✅"
+        roster_data.append({'Jugador': p.name, 'St': icon, 'Pos': p.lineupSlot, 'Score': round(score,1), 'Min': round(s.get('MIN',0),1)})
+        
+    st.dataframe(pd.DataFrame(roster_data).sort_values('Score'), use_container_width=True, hide_index=True)
+
+# TAB 3: WAIVER KING
+with tab3:
+    c_filt1, c_filt2 = st.columns(2)
+    min_mins = c_filt1.number_input("Minutos >", 10, 40, 22)
+    solo_hoy = c_filt2.checkbox("Juegan HOY", True)
+    
+    if st.button("🔎 Escanear Mercado"):
+        with st.spinner("Buscando joyas..."):
+            # Equipos hoy
+            eq_hoy = []
+            if solo_hoy:
+                # Hack rápido: buscar columna que coincida con día de hoy en el calendario cacheado
+                hoy_fmt = datetime.now().strftime("%a %d") # Depende del server locale, cuidado
+                # Mejor usamos la fecha numérica del request directo dentro de get_calendario si hiciera falta
+                # Para robustez, hacemos una llamada simple solo para hoy
+                try:
+                    hoy_url = datetime.now().strftime("%Y%m%d")
+                    d_hoy = requests.get(f"http://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={hoy_url}").json()
+                    for e in d_hoy['events']:
+                        for c in e['competitions'][0]['competitors']: eq_hoy.append(c['team']['abbreviation'])
+                except: pass
+
+            own_data = get_ownership_data(liga)
+            fa = liga.free_agents(size=150)
+            w_list = []
             
-            # YO
-            disp_yo = 0
-            for p in mi_equipo_obj.roster:
-                if p.lineupSlot == 'IR': continue
-                if excluir_out and p.injuryStatus == 'OUT': continue
+            for p in fa:
+                if getattr(p, 'acquisitionType', []) or p.injuryStatus == 'OUT': continue
+                if solo_hoy and not check_juego_hoy(p.proTeam, eq_hoy): continue
                 
-                if obtener_match_exacto(p.proTeam, equipos_juegan): 
-                    disp_yo += 1
+                s = p.stats.get(f"{season_id}_total", {}).get('avg', {}) or p.stats.get(f"{season_id}_projected", {}).get('avg', {})
+                if not s: continue
+                mpg = s.get('MIN', 0)
+                if mpg < min_mins: continue
+                
+                # Hype logic
+                od = own_data.get(p.playerId, {})
+                pch = od.get('percentChange', 0.0)
+                pop = od.get('percentOwned', 0.0)
+                ti = "🔥🔥" if pch>2 else "🔥" if pch>0.5 else "📈" if pch>0 else "❄️"
+                
+                # Score logic
+                sc = mpg * 0.5
+                cats_hit = []
+                if necesidades:
+                    for c in necesidades:
+                        v = s.get(c, 0)
+                        if v > 0: sc += v * 10; cats_hit.append(c)
+                else: sc += s.get('PTS',0) + s.get('REB',0)*1.2
+                
+                if pch > 1.5: sc += 15
+                
+                w_list.append({
+                    'Nombre': p.name, 'Eq': p.proTeam, 'Trend': f"{ti} {pch:+.1f}%", 
+                    'Min': round(mpg,1), 'Score': round(sc,1), 'Aporta': ",".join(cats_hit) if cats_hit else "-"
+                })
             
-            # RIVAL
-            disp_riv = 0
-            for p in rival_obj.roster:
-                if p.lineupSlot == 'IR': continue
-                if excluir_out and p.injuryStatus == 'OUT': continue
-                if obtener_match_exacto(p.proTeam, equipos_juegan): 
-                    disp_riv += 1
-            
-            usados_yo = min(disp_yo, limit_slots)
-            usados_riv = min(disp_riv, limit_slots)
-            
-            txt_yo = f"{usados_yo}" if disp_yo <= limit_slots else f"{usados_yo} ({disp_yo})"
-            txt_riv = f"{usados_riv}" if disp_riv <= limit_slots else f"{usados_riv} ({disp_riv})"
-            fila_yo.append(txt_yo); fila_rival.append(txt_riv)
-            diff = usados_yo - usados_riv
-            simbolo = "✅" if diff > 0 else "⚠️" if diff < 0 else "="
-            fila_diff.append(f"{diff} {simbolo}")
-            total_yo += usados_yo; total_rival += usados_riv
+            if w_list:
+                st.dataframe(pd.DataFrame(w_list).sort_values('Score', ascending=False).head(15), use_container_width=True, hide_index=True)
+            else:
+                st.info("Nadie cumple los filtros hoy.")
 
-        fila_yo.append(total_yo); fila_rival.append(total_rival)
-        diff_tot = total_yo - total_rival
-        fila_diff.append(f"{diff_tot} {'🔥' if diff_tot > 0 else '💀' if diff_tot < 0 else '='}")
-        
-        df_grid = pd.DataFrame([fila_yo, fila_rival, fila_diff], columns=["EQUIPO"] + dias_keys + ["TOTAL"])
-        st.dataframe(df_grid, use_container_width=True)
-
-        # --- LISTA DE ASISTENCIA ---
-        with st.expander("🕵️ Lista de Asistencia (Debugger)"):
-            dia_select = st.selectbox("Ver detalles del día:", dias_keys)
-            equipos_api = calendario[dia_select]
-            st.caption(f"Equipos jugando (API): {', '.join(equipos_api)}")
-            
-            lista_activos = []
-            for p in mi_equipo_obj.roster:
-                if p.lineupSlot == 'IR': continue
-                match_team = obtener_match_exacto(p.proTeam, equipos_api)
-                es_out = (p.injuryStatus == 'OUT')
-                contado = False
-                if match_team:
-                    if excluir_out and es_out:
-                        contado = False; match_info = f"Tiene partido ({match_team}) pero está OUT"
-                    else:
-                        contado = True; match_info = f"MATCH: {p.proTeam} == {match_team}"
-                else:
-                    match_info = "-"
-                lista_activos.append({"Jugador": p.name, "Equipo": p.proTeam, "Salud": p.injuryStatus,
-                                      "Contado?": "✅ SÍ" if contado else "❌ NO", "Detalle": match_info})
-            st.dataframe(pd.DataFrame(lista_activos).style.applymap(lambda v: 'color: green' if 'SÍ' in v else 'color: gray', subset=['Contado?']))
-
-# 2. MATCHUP & 3. VERDUGO
-st.markdown("---")
-c1, c2 = st.columns(2)
-with c1:
-    st.subheader("⚔️ Matchup"); necesidades=[]
-    if mi_matchup:
-        ms = calcular_stats_manuales(mi_matchup.home_lineup if soy_home else mi_matchup.away_lineup)
-        rs = calcular_stats_manuales(mi_matchup.away_lineup if soy_home else mi_matchup.home_lineup)
-        dt = []
-        for c in config['categorias']:
-            k='3PTM' if c=='3PTM' and '3PTM' not in ms else c
-            m=ms.get(k,0); r=rs.get(k,0); d=m-r if c!='TO' else r-m
-            stt="🟢" if d>0 else "🔴" if d<0 else "🟡"
-            if d<0: necesidades.append(c)
-            dt.append([c,f"{m:.2f}",f"{r:.2f}",f"{d:.2f}",stt])
-        st.dataframe(pd.DataFrame(dt, columns=['C','Y','R','D','W']), use_container_width=True)
-
-with c2:
-    st.subheader("🪓 Verdugo")
-    if mi_matchup:
-        dr=[]
-        for p in mi_equipo_obj.roster:
-            s=p.stats.get(f"{season_id}_total",{}).get('avg',{})
-            if not s: s=p.stats.get(f"{season_id}_projected",{}).get('avg',{})
-            scr=s.get('PTS',0)+s.get('REB',0)*1.2+s.get('AST',0)*1.5+s.get('STL',0)*2+s.get('BLK',0)*2
-            if 'DD' in config['categorias']: scr += s.get('DD', 0) * 5
-            icon = "⛔" if p.injuryStatus == 'OUT' else "⚠️" if p.injuryStatus == 'DAY_TO_DAY' else "✅"
-            dr.append({'J':p.name,'St':icon,'Pos':p.lineupSlot,'Scr':round(scr,1),'Min':round(s.get('MIN',0),1)})
-        df_r = pd.DataFrame(dr).sort_values(by='Scr', ascending=True)
-        st.dataframe(df_r, use_container_width=True, height=300)
-
-# 4. WAIVER KING
-st.markdown("---")
-st.header("💎 Waiver King")
-fc1, fc2 = st.columns(2)
-with fc1: min_m = st.slider("Minutos Mínimos", 10, 40, 22)
-with fc2: s_hoy = st.checkbox("Solo juegan HOY", value=True)
-
-if st.button("🔎 Buscar Joyas"):
-    with st.spinner('Escaneando...'):
-        eq_hoy = obtener_equipos_hoy_simple() if s_hoy else []
-        own_map = obtener_datos_ownership(liga)
-        fa = liga.free_agents(size=200)
-        w_data = []
-        for p in fa:
-            if getattr(p, 'acquisitionType', []) or p.injuryStatus == 'OUT': continue
-            if s_hoy and eq_hoy:
-                if not obtener_match_exacto(p.proTeam, eq_hoy): continue
-            stt = p.stats.get(f"{season_id}_total", {}).get('avg', {})
-            if not stt: stt = p.stats.get(f"{season_id}_projected", {}).get('avg', {})
-            if not stt: continue
-            mpg = stt.get('MIN', 0)
-            if mpg < min_m: continue
-            od = own_map.get(p.playerId, {})
-            pch = od.get('percentChange', 0.0); pop = od.get('percentOwned', 0.0)
-            ti = "🔥🔥" if pch>2 else "🔥" if pch>0.5 else "📈" if pch>0 else "❄️"
-            sc = mpg * 0.5
-            mc = []
-            if necesidades:
-                for c in necesidades:
-                    v = stt.get(c, 0)
-                    if v > 0: sc += v * 10; mc.append(c)
-            else: sc += stt.get('PTS',0) + stt.get('REB',0) + stt.get('AST',0)
-            if pch > 1.5: sc += 15
-            elif pch > 0.5: sc += 8
-            w_data.append({'Nombre': p.name, 'Eq': p.proTeam, 'Trend': f"{ti} {pch:+.1f}%", 'Own%': f"{pop:.1f}%",
-                           'Min': round(mpg,1), 'Score': round(sc,1), 'Ayuda': ", ".join(mc) if mc else "Gral"})
-        if w_data:
-            df_w = pd.DataFrame(w_data).sort_values(by='Score', ascending=False).head(20)
-            try: st.dataframe(df_w, use_container_width=True)
-            except: st.dataframe(df_w)
-        else: st.error("Sin resultados.")
-
-st.caption("🚀 Fantasy GM Architect v4.5 | LA Separation Fix")
+st.caption("🚀 Fantasy GM Architect v5.0 | Clean & Responsive")
