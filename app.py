@@ -20,22 +20,41 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- MAPEO DE EQUIPOS (ROSTER -> CALENDARIO) ---
-# Objetivo: Convertir todo a las 3 letras estándar de la API pública (GSW, NYK, NOP, SAS, WAS, UTA, PHX)
+# --- MAPEO UNIVERSAL V4 ---
 MAPEO_EQUIPOS = {
-    # Variantes Raras -> Estándar
     'GS': 'GSW', 'NO': 'NOP', 'NY': 'NYK', 'SA': 'SAS', 'WSH': 'WAS', 'UTAH': 'UTA', 'PHO': 'PHX',
-    # Aseguramos que los estándar se mapeen a sí mismos
     'GSW': 'GSW', 'NOP': 'NOP', 'NYK': 'NYK', 'SAS': 'SAS', 'WAS': 'WAS', 'UTA': 'UTA', 'PHX': 'PHX',
-    'BKN': 'BKN', 'BRK': 'BKN', 'CHA': 'CHA', 'CHI': 'CHI', 'CLE': 'CLE', 'DAL': 'DAL', 'DEN': 'DEN', 
-    'DET': 'DET', 'HOU': 'HOU', 'IND': 'IND', 'LAC': 'LAC', 'LAL': 'LAL', 'MEM': 'MEM', 'MIA': 'MIA', 
-    'MIL': 'MIL', 'MIN': 'MIN', 'OKC': 'OKC', 'ORL': 'ORL', 'PHI': 'PHI', 'POR': 'POR', 'SAC': 'SAC', 
-    'TOR': 'TOR', 'ATL': 'ATL', 'BOS': 'BOS'
+    'BKN': 'BKN', 'BRK': 'BKN', 'BK': 'BKN',
+    'CHA': 'CHA', 'CHO': 'CHA', # Charlotte variante
+    'LAC': 'LAC', 'LAL': 'LAL', 'CHI': 'CHI', 'CLE': 'CLE', 'DAL': 'DAL', 'DEN': 'DEN', 'DET': 'DET',
+    'HOU': 'HOU', 'IND': 'IND', 'MEM': 'MEM', 'MIA': 'MIA', 'MIL': 'MIL', 'MIN': 'MIN', 'OKC': 'OKC',
+    'ORL': 'ORL', 'PHI': 'PHI', 'POR': 'POR', 'SAC': 'SAC', 'TOR': 'TOR', 'ATL': 'ATL', 'BOS': 'BOS'
 }
 
 def normalizar_equipo(abrev):
-    # Convertimos a mayúsculas y buscamos en el mapa. Si no está, devolvemos el original.
-    return MAPEO_EQUIPOS.get(abrev.upper(), abrev.upper())
+    if not abrev: return "N/A"
+    clean = abrev.strip().upper() # Limpieza de espacios
+    return MAPEO_EQUIPOS.get(clean, clean)
+
+def verificar_juego_hoy(equipo_roster, lista_equipos_hoy_raw):
+    if not equipo_roster: return False
+    eq_roster = equipo_roster.strip().upper()
+    lista_hoy = [x.strip().upper() for x in lista_equipos_hoy_raw]
+    
+    # 1. Coincidencia Directa
+    if eq_roster in lista_hoy: return True
+    
+    # 2. Roster -> Calendario
+    traduccion = MAPEO_EQUIPOS.get(eq_roster)
+    if traduccion and traduccion in lista_hoy: return True
+    
+    # 3. Calendario -> Roster
+    for cal_eq in lista_hoy:
+        trad_cal = MAPEO_EQUIPOS.get(cal_eq, cal_eq)
+        if trad_cal == eq_roster: return True
+        if traduccion and trad_cal == traduccion: return True
+        
+    return False
 
 # --- FUNCIONES ---
 @st.cache_data(ttl=3600) 
@@ -130,10 +149,10 @@ for m in box_scores:
     if PALABRA_CLAVE.lower() in m.home_team.team_name.lower(): mi_matchup = m; soy_home = True; break
     elif PALABRA_CLAVE.lower() in m.away_team.team_name.lower(): mi_matchup = m; soy_home = False; break
 
-# 1. GRID SEMANAL
+# 1. GRID SEMANAL (V4.0)
 st.header(f"📅 Planificación Semanal (Límite: {limit_slots})")
 if mi_matchup:
-    with st.spinner("Analizando Calendario..."):
+    with st.spinner("Analizando..."):
         calendario = obtener_calendario_semanal_nba()
         mi_equipo_obj = mi_matchup.home_team if soy_home else mi_matchup.away_team
         rival_obj = mi_matchup.away_team if soy_home else mi_matchup.home_team
@@ -144,28 +163,23 @@ if mi_matchup:
         
         for dia in dias_keys:
             equipos_juegan = calendario[dia]
-            
-            # YO
             disp_yo = 0
             for p in mi_equipo_obj.roster:
-                if p.lineupSlot != 'IR':
-                    tm = normalizar_equipo(p.proTeam)
-                    if tm in equipos_juegan: disp_yo += 1
+                if p.lineupSlot != 'IR': 
+                    if verificar_juego_hoy(p.proTeam, equipos_juegan): disp_yo += 1
             
-            # RIVAL
             disp_riv = 0
             for p in rival_obj.roster:
                 if p.lineupSlot != 'IR':
-                    tm = normalizar_equipo(p.proTeam)
-                    if tm in equipos_juegan: disp_riv += 1
+                    if verificar_juego_hoy(p.proTeam, equipos_juegan): disp_riv += 1
             
             usados_yo = min(disp_yo, limit_slots)
             usados_riv = min(disp_riv, limit_slots)
             
             txt_yo = f"{usados_yo}" if disp_yo <= limit_slots else f"{usados_yo} ({disp_yo})"
             txt_riv = f"{usados_riv}" if disp_riv <= limit_slots else f"{usados_riv} ({disp_riv})"
-            
             fila_yo.append(txt_yo); fila_rival.append(txt_riv)
+            
             diff = usados_yo - usados_riv
             simbolo = "✅" if diff > 0 else "⚠️" if diff < 0 else "="
             fila_diff.append(f"{diff} {simbolo}")
@@ -178,38 +192,29 @@ if mi_matchup:
         df_grid = pd.DataFrame([fila_yo, fila_rival, fila_diff], columns=["EQUIPO"] + dias_keys + ["TOTAL"])
         st.dataframe(df_grid, use_container_width=True)
 
-        # --- MODO SHERLOCK HOLMES (DEBUGGER) ---
-        with st.expander("🕵️ Inspector de Días (¿Quién falta?)"):
-            dia_select = st.selectbox("Selecciona día para inspeccionar:", dias_keys)
+        # --- CAZAFANTASMAS (DEBUGGING) ---
+        with st.expander("👻 ¿Faltan Jugadores? (Abrir Aquí)", expanded=True):
+            dia_opciones = list(calendario.keys())
+            # Intentamos seleccionar Viernes por defecto para agilizar tu test
+            idx_fri = next((i for i, d in enumerate(dia_opciones) if 'Fri' in d), 0)
+            dia_debug = st.selectbox("Analizar Día:", dia_opciones, index=idx_fri)
             
-            if dia_select:
-                equipos_api = calendario[dia_select]
-                st.write(f"**Equipos jugando según API:** {', '.join(equipos_api)}")
-                
-                debug_list = []
-                for p in mi_equipo_obj.roster:
-                    if p.lineupSlot == 'IR': continue
-                    
-                    raw_team = p.proTeam
-                    norm_team = normalizar_equipo(raw_team)
-                    juega = norm_team in equipos_api
-                    
-                    status = "✅ JUEGA" if juega else "❌ NO JUEGA"
-                    # Detalles del error si falla
-                    if not juega and raw_team in str(equipos_api): 
-                        status += " (Error de Mapeo?)"
-                    
-                    debug_list.append({
-                        'Jugador': p.name,
-                        'Equipo (Roster)': raw_team,
-                        'Equipo (Norm)': norm_team,
-                        'Estado': status
-                    })
-                
-                df_debug = pd.DataFrame(debug_list)
-                st.dataframe(df_debug.style.applymap(lambda v: 'color: red;' if 'NO' in v else 'color: green;', subset=['Estado']), use_container_width=True)
+            equipos_api = calendario[dia_debug]
+            st.code(f"Equipos en API ({dia_debug}): {', '.join(equipos_api)}")
+            
+            debug_rows = []
+            for p in mi_equipo_obj.roster:
+                if p.lineupSlot == 'IR': continue
+                juega = verificar_juego_hoy(p.proTeam, equipos_api)
+                status = "✅ JUEGA" if juega else "❌ NO"
+                debug_rows.append({
+                    "Jugador": p.name,
+                    "Equipo": f"'{p.proTeam}'", # Comillas para ver espacios
+                    "¿Detectado?": status
+                })
+            st.dataframe(pd.DataFrame(debug_rows))
 
-# 2. MATCHUP & 3. VERDUGO
+# Resto de secciones...
 st.markdown("---")
 c1, c2 = st.columns(2)
 with c1:
@@ -237,13 +242,9 @@ with c2:
             if 'DD' in config['categorias']: scr += stats.get('DD', 0) * 5
             icon = "⛔" if p.injuryStatus == 'OUT' else "⚠️" if p.injuryStatus == 'DAY_TO_DAY' else "✅"
             dr.append({'J':p.name,'St':icon,'Pos':p.lineupSlot,'Scr':round(scr,1),'Min':round(stats.get('MIN',0),1)})
-        
         df_r = pd.DataFrame(dr).sort_values(by='Scr', ascending=True)
         st.dataframe(df_r, use_container_width=True, height=300)
-        les_act = df_r[ (df_r['St'] == '⛔') & (df_r['Pos'] != 'IR') ]
-        if not les_act.empty: st.error(f"🚨 JUGADORES OUT ACTIVOS: {', '.join(les_act['J'].tolist())}")
 
-# 4. WAIVER KING
 st.markdown("---")
 st.header("💎 Waiver King")
 fc1, fc2 = st.columns(2)
@@ -258,8 +259,8 @@ if st.button("🔎 Buscar Joyas"):
         w_data = []
         for p in fa:
             if getattr(p, 'acquisitionType', []) or p.injuryStatus == 'OUT': continue
-            tm = normalizar_equipo(p.proTeam)
-            if s_hoy and eq_hoy and tm not in eq_hoy: continue
+            if s_hoy and eq_hoy:
+                if not verificar_juego_hoy(p.proTeam, eq_hoy): continue
             stt = p.stats.get(f"{season_id}_total", {}).get('avg', {})
             if not stt: stt = p.stats.get(f"{season_id}_projected", {}).get('avg', {})
             if not stt: continue
@@ -285,4 +286,4 @@ if st.button("🔎 Buscar Joyas"):
             except: st.dataframe(df_w)
         else: st.error("Sin resultados.")
 
-st.caption("🚀 Fantasy GM Architect v3.9 | Sherlock Inspector Enabled")
+st.caption("🚀 Fantasy GM Architect v4.0 | Ghostbuster Mode")
