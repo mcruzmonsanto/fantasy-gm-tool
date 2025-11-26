@@ -16,12 +16,10 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# --- 2. ESTILOS VISUALES (CSS CORREGIDO) ---
+# --- 2. ESTILOS VISUALES ---
 st.markdown("""
 <style>
-    /* AUMENTADO EL PADDING SUPERIOR PARA EVITAR CORTES EN TÍTULO */
     .block-container {padding-top: 5rem; padding-bottom: 4rem;}
-    
     .stDataFrame {border: 1px solid #2b2b2b; border-radius: 5px;}
     .team-name {font-size: 1.1rem; font-weight: 700; text-align: center; margin-bottom: 0;}
     .vs-tag {font-size: 0.9rem; color: #ff4b4b; text-align: center; font-weight: 800; margin-top: 5px;}
@@ -38,6 +36,7 @@ st.markdown("""
         margin-bottom: 8px; border-left: 3px solid #ff4b4b;
         transition: transform 0.2s;
     }
+    .news-card:hover {transform: translateX(5px);}
     .news-title {font-weight: 600; color: #fff; text-decoration: none; font-size: 0.95rem;}
     .news-date {color: #888; font-size: 0.75rem; margin-top: 4px;}
 </style>
@@ -123,40 +122,19 @@ def get_ownership(liga):
         return {p['id']: p['player']['ownership'] for p in data.get('players', [])}
     except: return {}
 
+# --- RETORNO A LA FUNCIÓN SIMPLE (V7.1) QUE SÍ FUNCIONABA ---
 def get_news():
-    """Versión BLINDADA de Noticias V8.3"""
     try:
         url = "https://www.espn.com/espn/rss/nba/news"
-        # Headers para simular navegador real
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
-        }
-        response = requests.get(url, headers=headers, timeout=4)
-        
-        if response.status_code != 200:
-            return []
-            
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, headers=headers, timeout=5)
         root = ET.fromstring(response.content)
-        items = []
-        # Intentamos leer items, si falla XML, capturamos
-        for i in root.findall('./channel/item')[:6]:
-            try:
-                title = i.find('title')
-                link = i.find('link')
-                pubDate = i.find('pubDate')
-                
-                if title is not None and link is not None:
-                    items.append({
-                        't': title.text, 
-                        'l': link.text, 
-                        'd': pubDate.text if pubDate is not None else ""
-                    })
-            except:
-                continue # Salta noticia corrupta individualmente
-        return items
-    except Exception: 
-        return [] # Si falla todo, retorna lista vacía y NO crashea
+        news = []
+        for item in root.findall('./channel/item')[:8]: 
+            news.append({'t': item.find('title').text, 'l': item.find('link').text, 'd': item.find('pubDate').text})
+        return news
+    except: 
+        return [] # Silencioso si falla
 
 def get_league_activity(liga):
     try:
@@ -218,7 +196,7 @@ soy_home = "Max" in matchup.home_team.team_name
 mi_equipo = matchup.home_team if soy_home else matchup.away_team
 rival = matchup.away_team if soy_home else matchup.home_team
 
-# HEADER MEJORADO V8.3
+# HEADER
 st.markdown(f"<div class='league-tag'>{nombre_liga}</div>", unsafe_allow_html=True)
 c1, c2, c3 = st.columns([5, 1, 5])
 with c1: st.markdown(f"<div class='team-name'>{mi_equipo.team_name}</div>", unsafe_allow_html=True)
@@ -335,6 +313,7 @@ with tab4:
                 if getattr(p, 'acquisitionType', []) or p.injuryStatus == 'OUT': continue
                 mt = check_match(p.proTeam, hoy_eqs)
                 if s_hoy and not mt: continue
+                
                 sc, s = calc_score(p, config, season_id)
                 if not s or sc < 5: continue
                 mpg = s.get('MIN', 0)
@@ -395,7 +374,6 @@ with tab6:
     except: pass
     st.divider()
     st.subheader("📰 Noticias")
-    # Llamada segura a noticias
     news_list = get_nba_news()
     if news_list:
         for n in news_list:
@@ -403,4 +381,4 @@ with tab6:
     else:
         st.info("No hay noticias disponibles.")
 
-st.caption("🚀 Fantasy GM Architect v8.3 | Final Fix")
+st.caption("🚀 Fantasy GM Architect v8.4 | Back to Stability")
