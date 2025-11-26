@@ -5,6 +5,7 @@ import json
 from datetime import datetime, timedelta
 import sys
 import os
+import xml.etree.ElementTree as ET # Para noticias RSS
 
 # --- 1. CONFIGURACIÓN INICIAL ---
 from src.conectar import obtener_liga
@@ -17,18 +18,18 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# CSS AJUSTADO PARA MÓVIL
+# CSS AJUSTADO (Estilo Noticias)
 st.markdown("""
 <style>
     .stDataFrame {border: 1px solid #333;}
-    .block-container {
-        padding-top: 3rem;
-        padding-bottom: 5rem;
-    } 
-    div[data-testid="stExpander"] details summary p {font-weight: bold;}
+    .block-container {padding-top: 3rem; padding-bottom: 5rem;} 
     .team-name {font-size: 18px; font-weight: bold; text-align: center;}
     .vs-tag {font-size: 14px; color: #FF4B4B; text-align: center; font-weight: bold;}
     .league-tag {font-size: 12px; color: #888; text-align: center; margin-bottom: 5px;}
+    /* Estilo Noticias */
+    .news-card {background-color: #262730; padding: 10px; border-radius: 5px; margin-bottom: 10px; border-left: 4px solid #FF4B4B;}
+    .news-title {font-weight: bold; color: #FFF; font-size: 14px;}
+    .news-date {color: #888; font-size: 11px;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -84,6 +85,44 @@ def get_ownership_data(liga):
         data = r.json()
         return {p['id']: p['player']['ownership'] for p in data.get('players', [])}
     except: return {}
+
+def get_nba_news():
+    """Descarga noticias RSS de ESPN NBA"""
+    try:
+        url = "https://www.espn.com/espn/rss/nba/news"
+        response = requests.get(url)
+        root = ET.fromstring(response.content)
+        news = []
+        for item in root.findall('./channel/item')[:8]: # Top 8 noticias
+            news.append({
+                'title': item.find('title').text,
+                'link': item.find('link').text,
+                'pubDate': item.find('pubDate').text
+            })
+        return news
+    except: return []
+
+def get_league_activity(liga):
+    """Obtiene transacciones recientes de la liga"""
+    try:
+        # espn_api tiene recent_activity()
+        activity = liga.recent_activity(size=15)
+        logs = []
+        for act in activity:
+            # act.actions es una lista de tuplas/objetos (team, type, player)
+            # La estructura exacta varía según versión, intentamos parsear seguro
+            if hasattr(act, 'actions'):
+                for action in act.actions:
+                    # action suele ser (Team(Object), 'DROP', 'PlayerName')
+                    team_obj, tipo, player_name = action
+                    logs.append({
+                        'Equipo': team_obj.team_name,
+                        'Acción': tipo,
+                        'Jugador': player_name,
+                        'Fecha': datetime.fromtimestamp(act.date/1000).strftime('%d/%m %H:%M')
+                    })
+        return pd.DataFrame(logs)
+    except: return pd.DataFrame()
 
 def calcular_stats_matchup(lineup):
     totales = {k: 0 for k in ['PTS','REB','AST','STL','BLK','3PTM','TO','DD','FGM','FGA','FTM','FTA']}
@@ -157,7 +196,7 @@ with st.expander("📅 Planificación Semanal (Grid)", expanded=True):
     st.dataframe(pd.DataFrame(rows, index=list(calendario.keys()) + ["TOTAL"]).T, use_container_width=True)
 
 # --- MÓDULO 2: PESTAÑAS TÁCTICAS ---
-tab1, tab2, tab3 = st.tabs(["⚔️ Matchup", "🪓 Cortes", "💎 Waiver"])
+tab1, tab2, tab3, tab4 = st.tabs(["⚔️ Matchup", "🪓 Cortes", "💎 Waiver", "🕵️ Espía"])
 necesidades = []
 
 # TAB 1: MATCHUP
@@ -190,17 +229,15 @@ with tab2:
         roster_data.append({'Jugador': p.name, 'St': icon, 'Pos': p.lineupSlot, 'Score': round(score,1), 'Min': round(s.get('MIN',0),1)})
     st.dataframe(pd.DataFrame(roster_data).sort_values('Score'), use_container_width=True, hide_index=True)
 
-# TAB 3: WAIVER KING (MONEYBALL EDITION)
+# TAB 3: WAIVER KING
 with tab3:
     c_filt1, c_filt2 = st.columns(2)
     min_mins = c_filt1.number_input("Minutos >", 10, 40, 22)
     solo_hoy = c_filt2.checkbox("Juegan HOY", True)
-    
-    # NUEVO: Selector de Orden
     ordenar_por = st.selectbox("Ordenar por:", ["Score (Rendimiento)", "Trend (Hype)", "FPPM (Eficiencia)"])
     
     if st.button("🔎 Escanear Mercado"):
-        with st.spinner("Analizando Eficiencia y Hype..."):
+        with st.spinner("Analizando..."):
             eq_hoy = []
             if solo_hoy:
                 try:
@@ -212,7 +249,6 @@ with tab3:
             own_data = get_ownership_data(liga)
             fa = liga.free_agents(size=150)
             w_list = []
-            
             for p in fa:
                 if getattr(p, 'acquisitionType', []) or p.injuryStatus == 'OUT': continue
                 if solo_hoy and not check_juego_hoy(p.proTeam, eq_hoy): continue
@@ -220,8 +256,6 @@ with tab3:
                 if not s: continue
                 mpg = s.get('MIN', 0)
                 if mpg < min_mins: continue
-                
-                # Metrics Moneyball
                 od = own_data.get(p.playerId, {})
                 pch = od.get('percentChange', 0.0)
                 pop = od.get('percentOwned', 0.0)
@@ -236,42 +270,39 @@ with tab3:
                 else: sc += s.get('PTS',0) + s.get('REB',0)*1.2
                 if pch > 1.5: sc += 15
                 
-                # CALCULO FPPM (Puntos Fantasy por Minuto)
-                # Usamos un score estandarizado para comparar eficiencia
                 std_score = s.get('PTS',0) + s.get('REB',0)*1.2 + s.get('AST',0)*1.5 + s.get('STL',0)*2 + s.get('BLK',0)*2
                 fppm = std_score / mpg if mpg > 0 else 0
+                eff_icon = "💎" if fppm > 1.1 else ""
                 
-                # Icono de Eficiencia
-                eff_icon = ""
-                if fppm > 1.1: eff_icon = "💎" # Joya oculta
-                
-                w_list.append({
-                    'Nombre': p.name, 'Eq': p.proTeam, 
-                    'Trend': f"{ti} {pch:+.1f}%", 
-                    'Min': round(mpg,1), 
-                    'Score': round(sc,1), 
-                    'FPPM': f"{eff_icon} {fppm:.2f}", # Nueva Columna
-                    'Aporta': ",".join(cats_hit) if cats_hit else "-",
-                    # Columnas ocultas para ordenar
-                    '_trend': pch,
-                    '_fppm': fppm
-                })
-            
+                w_list.append({'Nombre': p.name, 'Eq': p.proTeam, 'Trend': f"{ti} {pch:+.1f}%", 'Min': round(mpg,1), 
+                               'Score': round(sc,1), 'FPPM': f"{eff_icon} {fppm:.2f}", 'Aporta': ",".join(cats_hit) if cats_hit else "-", '_trend': pch, '_fppm': fppm})
             if w_list:
                 df_w = pd.DataFrame(w_list)
-                
-                # Lógica de Ordenamiento Dinámico
-                if ordenar_por == "Trend (Hype)":
-                    df_w = df_w.sort_values('_trend', ascending=False)
-                elif ordenar_por == "FPPM (Eficiencia)":
-                    df_w = df_w.sort_values('_fppm', ascending=False)
-                else:
-                    df_w = df_w.sort_values('Score', ascending=False)
-                
-                # Limpiamos columnas de ordenamiento antes de mostrar
-                cols_mostrar = ['Nombre', 'Eq', 'Trend', 'FPPM', 'Min', 'Score', 'Aporta']
-                st.dataframe(df_w[cols_mostrar].head(20), use_container_width=True, hide_index=True)
-            else:
-                st.info("Nadie cumple los filtros hoy.")
+                if ordenar_por == "Trend (Hype)": df_w = df_w.sort_values('_trend', ascending=False)
+                elif ordenar_por == "FPPM (Eficiencia)": df_w = df_w.sort_values('_fppm', ascending=False)
+                else: df_w = df_w.sort_values('Score', ascending=False)
+                st.dataframe(df_w[['Nombre','Eq','Trend','FPPM','Min','Score','Aporta']].head(20), use_container_width=True, hide_index=True)
+            else: st.info("Sin resultados.")
 
-st.caption("🚀 Fantasy GM Architect v5.2 | Moneyball Module")
+# TAB 4: EL ESPÍA (INTEL HUB)
+with tab4:
+    st.subheader("🕵️ Actividad Reciente de la Liga")
+    df_act = get_league_activity(liga)
+    if not df_act.empty:
+        # Highlight drops importantes
+        st.dataframe(df_act, use_container_width=True, hide_index=True)
+    else:
+        st.info("No hay actividad reciente o la API no la entrega.")
+        
+    st.markdown("---")
+    st.subheader("📰 Noticias NBA (En Vivo)")
+    news = get_nba_news()
+    for n in news:
+        st.markdown(f"""
+        <div class="news-card">
+            <div class="news-title"><a href="{n['link']}" target="_blank" style="color:white;text-decoration:none;">{n['title']}</a></div>
+            <div class="news-date">{n['pubDate']}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+st.caption("🚀 Fantasy GM Architect v5.3 | The Intel Hub")
