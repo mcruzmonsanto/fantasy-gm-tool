@@ -1,8 +1,8 @@
 import streamlit as st
 import pandas as pd
 import requests
-import json 
-from datetime import datetime
+import json
+from datetime import datetime, timedelta
 import sys
 import os
 
@@ -24,11 +24,53 @@ st.markdown("""
     .metric-card {background-color: #1E1E1E; padding: 15px; border-radius: 10px; border: 1px solid #333;}
     .big-font {font-size: 24px !important; font-weight: bold;}
     .stDataFrame {border: 1px solid #444;}
+    /* Colores para el Grid */
+    .day-win {background-color: rgba(0, 255, 0, 0.1); color: #00FF00;}
+    .day-lose {background-color: rgba(255, 75, 75, 0.1); color: #FF4B4B;}
 </style>
 """, unsafe_allow_html=True)
 
 # --- FUNCIONES AUXILIARES ---
+
+@st.cache_data(ttl=3600) # Guardamos esto en caché por 1 hora para que sea rápido
+def obtener_calendario_semanal_nba():
+    """
+    Descarga el calendario de la NBA para los 7 días de la semana actual (Lun-Dom).
+    Retorna un diccionario: {'2025-11-25': ['LAL', 'BOS'], ...}
+    """
+    # 1. Encontrar el Lunes de esta semana
+    hoy = datetime.now()
+    inicio_semana = hoy - timedelta(days=hoy.weekday()) # Lunes
+    
+    calendario_semanal = {}
+    
+    # 2. Iterar 7 días
+    for i in range(7):
+        dia = inicio_semana + timedelta(days=i)
+        dia_str = dia.strftime("%Y%m%d") # Formato API
+        dia_fmt = dia.strftime("%a %d")  # Formato Visual (Lun 25)
+        
+        url = f"http://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={dia_str}"
+        equipos_dia = []
+        try:
+            data = requests.get(url).json()
+            for event in data.get('events', []):
+                for comp in event.get('competitions', []):
+                    for competitor in comp.get('competitors', []):
+                        abrev = competitor.get('team', {}).get('abbreviation')
+                        if abrev: equipos_dia.append(abrev)
+        except: pass
+        
+        calendario_semanal[dia_fmt] = equipos_dia
+        
+    return calendario_semanal
+
 def obtener_equipos_hoy():
+    # Usamos la función cacheada para extraer solo hoy
+    cal = obtener_calendario_semanal_nba()
+    hoy_fmt = datetime.now().strftime("%a %d")
+    # Buscamos la clave que coincida con hoy (puede variar por idioma del server, así que buscamos fecha)
+    # Simplificación: Hacemos request directo para hoy para asegurar consistencia en Waiver
     hoy_str = datetime.now().strftime("%Y%m%d")
     url = f"http://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={hoy_str}"
     equipos = []
@@ -99,9 +141,7 @@ def obtener_datos_ownership(liga):
                 'percentChange': ownership.get('percentChange', 0.0)
             }
         return ownership_map
-    except Exception as e:
-        print(f"Error ownership: {e}")
-        return {}
+    except Exception as e: return {}
 
 # --- INTERFAZ PRINCIPAL ---
 
@@ -122,9 +162,9 @@ if not liga:
     st.stop()
 
 # ==========================================
-# SECCIÓN 1: MATCHUP EN VIVO
+# SECCIÓN 1: THE WEEKLY GRID (NUEVO)
 # ==========================================
-st.header("⚔️ Matchup Semanal")
+st.header("📅 Planificación Semanal (The Grid)")
 
 box_scores = liga.box_scores()
 mi_matchup = None
@@ -135,17 +175,71 @@ for m in box_scores:
     if PALABRA_CLAVE.lower() in m.home_team.team_name.lower(): mi_matchup = m; soy_home = True; break
     elif PALABRA_CLAVE.lower() in m.away_team.team_name.lower(): mi_matchup = m; soy_home = False; break
 
+if mi_matchup:
+    with st.spinner("Calculando Matrix de Calendario..."):
+        calendario = obtener_calendario_semanal_nba()
+        
+        mi_equipo_obj = mi_matchup.home_team if soy_home else mi_matchup.away_team
+        rival_obj = mi_matchup.away_team if soy_home else mi_matchup.home_team
+        
+        # Analizamos día por día
+        data_grid = []
+        dias_semana = list(calendario.keys())
+        
+        fila_yo = ["YO"]
+        fila_rival = ["RIVAL"]
+        fila_diff = ["DIFF"]
+        
+        total_yo = 0
+        total_rival = 0
+
+        for dia in dias_semana:
+            equipos_juegan = calendario[dia]
+            
+            # Contar mis jugadores activos
+            count_yo = 0
+            for p in mi_equipo_obj.roster:
+                if p.injuryStatus != 'OUT' and p.proTeam in equipos_juegan and p.lineupSlot != 'IR':
+                    count_yo += 1
+            
+            # Contar rival
+            count_rival = 0
+            for p in rival_obj.roster:
+                if p.injuryStatus != 'OUT' and p.proTeam in equipos_juegan and p.lineupSlot != 'IR':
+                    count_rival += 1
+            
+            fila_yo.append(count_yo)
+            fila_rival.append(count_rival)
+            
+            diff = count_yo - count_rival
+            simbolo = "✔️" if diff > 0 else "⚠️" if diff < 0 else "="
+            fila_diff.append(f"{diff} {simbolo}")
+            
+            total_yo += count_yo
+            total_rival += count_rival
+
+        # Totales
+        fila_yo.append(total_yo)
+        fila_rival.append(total_rival)
+        fila_diff.append(total_yo - total_rival)
+        
+        cols = ["EQUIPO"] + dias_semana + ["TOTAL"]
+        df_grid = pd.DataFrame([fila_yo, fila_rival, fila_diff], columns=cols)
+        
+        st.dataframe(df_grid, use_container_width=True)
+        
+        if total_yo < total_rival:
+            st.error(f"⚠️ ALERTA DE VOLUMEN: Juegas {total_rival - total_yo} partidos MENOS que tu rival esta semana.")
+
+# ==========================================
+# SECCIÓN 2: MATCHUP EN VIVO
+# ==========================================
+st.markdown("---")
+st.header("⚔️ Matchup Stats")
+
 necesidades = []
 
 if mi_matchup:
-    mi_equipo_obj = mi_matchup.home_team if soy_home else mi_matchup.away_team
-    rival = mi_matchup.away_team if soy_home else mi_matchup.home_team
-    
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col1: st.metric("Mi Equipo", mi_equipo_obj.team_name)
-    with col2: st.markdown("<h2 style='text-align: center;'>VS</h2>", unsafe_allow_html=True)
-    with col3: st.metric("Oponente", rival.team_name)
-
     mis_stats = calcular_stats_manuales(mi_matchup.home_lineup if soy_home else mi_matchup.away_lineup)
     rival_stats = calcular_stats_manuales(mi_matchup.away_lineup if soy_home else mi_matchup.home_lineup)
     
@@ -168,25 +262,24 @@ if mi_matchup:
         fmt_rival = f"{val_rival:.3f}" if cat in ['FG%','FT%'] else f"{val_rival:.0f}"
         data_tabla.append([cat, fmt_mio, fmt_rival, f"{diff:.2f}", estado])
 
-    st.markdown(f"### 🏆 Marcador: {wins} - {losses} - {ties}")
+    col_m1, col_m2 = st.columns([1, 2])
+    with col_m1:
+        st.markdown(f"### 🏆 {wins}-{losses}-{ties}")
+    with col_m2:
+        if necesidades: st.warning(f"🎯 OBJETIVOS: {', '.join(necesidades)}")
+        else: st.success("Dominando.")
+    
     df_matchup = pd.DataFrame(data_tabla, columns=['CAT', 'YO', 'RIVAL', 'DIFF', 'WIN?'])
     try: st.dataframe(df_matchup, use_container_width=True)
     except: st.dataframe(df_matchup)
-    
-    if necesidades: st.warning(f"🔥 PRIORIDAD DE FICHAJE: {', '.join(necesidades)}")
-    else: st.success("🎉 ¡Vas ganando todo! Mantén la posición.")
-else:
-    st.warning("No se encontró matchup.")
-    st.stop() 
 
 # ==========================================
-# SECCIÓN 2: EL VERDUGO (CORTES)
+# SECCIÓN 3: EL VERDUGO
 # ==========================================
 st.markdown("---")
-st.header("🪓 El Verdugo (Candidatos a Corte)")
-st.caption("Ordenado de PEOR a MEJOR rendimiento promedio.")
+st.header("🪓 El Verdugo")
 
-if mi_equipo_obj:
+if mi_matchup:
     datos_roster = []
     for jugador in mi_equipo_obj.roster:
         stats = jugador.stats.get(f"{season_id}_total", {}).get('avg', {})
@@ -205,35 +298,29 @@ if mi_equipo_obj:
             'Pos': jugador.lineupSlot,
             'Score': round(score, 1),
             'Min': round(stats.get('MIN', 0), 1),
-            'PTS': round(stats.get('PTS', 0), 1),
-            'REB': round(stats.get('REB', 0), 1),
-            'AST': round(stats.get('AST', 0), 1)
+            'PTS': round(stats.get('PTS', 0), 1)
         })
     
-    df_roster = pd.DataFrame(datos_roster)
-    df_roster = df_roster.sort_values(by='Score', ascending=True)
+    df_roster = pd.DataFrame(datos_roster).sort_values(by='Score', ascending=True)
     try: st.dataframe(df_roster, use_container_width=True)
     except: st.dataframe(df_roster)
 
     lesionados_activos = df_roster[ (df_roster['Status'] == '⛔ OUT') & (df_roster['Pos'] != 'IR') ]
-    if not lesionados_activos.empty: st.error(f"🚨 JUGADORES 'OUT' EN ACTIVO: {', '.join(lesionados_activos['Jugador'].tolist())}")
+    if not lesionados_activos.empty: st.error(f"🚨 SACAR JUGADORES 'OUT': {', '.join(lesionados_activos['Jugador'].tolist())}")
 
 # ==========================================
-# SECCIÓN 3: WAIVER KING (CON HYPE TUNING V2.3)
+# SECCIÓN 4: WAIVER KING
 # ==========================================
 st.markdown("---")
-st.header("💎 Waiver King (Mercado + Hype)")
-st.caption("Busca jugadores que jueguen hoy y que el mundo esté fichando.")
+st.header("💎 Waiver King")
 
 col_filtro1, col_filtro2 = st.columns(2)
 with col_filtro1: min_minutos = st.slider("Minutos Mínimos", 10, 40, 22)
 with col_filtro2: solo_hoy = st.checkbox("Solo juegan HOY", value=True)
 
 if st.button("🔎 Buscar Joyas"):
-    with st.spinner('Analizando Mercado y Hype...'):
+    with st.spinner('Analizando Mercado...'):
         equipos_hoy = obtener_equipos_hoy() if solo_hoy else []
-        if solo_hoy and not equipos_hoy: st.warning("No hay partidos hoy (o error API).")
-
         ownership_map = obtener_datos_ownership(liga)
         free_agents = liga.free_agents(size=250)
         waiver_data = []
@@ -255,13 +342,11 @@ if st.button("🔎 Buscar Joyas"):
             own_pct = p_data.get('percentOwned', 0.0)
             own_chg = p_data.get('percentChange', 0.0)
             
-            # --- AJUSTE DE SENSIBILIDAD DEL HYPE ---
             trend_icon = ""
-            if own_chg > 2.0: trend_icon = "🔥🔥"   # Super Hype (+2%)
-            elif own_chg > 0.5: trend_icon = "🔥"   # Hot (+0.5%)
-            elif own_chg > 0.0: trend_icon = "📈"   # Subiendo (+0.1%)
-            elif own_chg < -0.5: trend_icon = "❄️"  # Bajando (-0.5%)
-            
+            if own_chg > 2.0: trend_icon = "🔥🔥" 
+            elif own_chg > 0.5: trend_icon = "🔥" 
+            elif own_chg > 0.0: trend_icon = "📈" 
+            elif own_chg < -0.5: trend_icon = "❄️"
             trend_txt = f"{trend_icon} {own_chg:+.1f}%"
 
             score = mpg * 0.5
@@ -273,7 +358,6 @@ if st.button("🔎 Buscar Joyas"):
             else:
                 score += stats.get('PTS', 0) + stats.get('REB', 0) + stats.get('AST', 0)
             
-            # Bonus Hype Ajustado
             if own_chg > 1.5: score += 15
             elif own_chg > 0.5: score += 8
 
@@ -288,11 +372,10 @@ if st.button("🔎 Buscar Joyas"):
             })
             
         if waiver_data:
-            df_waiver = pd.DataFrame(waiver_data)
-            df_waiver = df_waiver.sort_values(by='Score', ascending=False).head(20)
+            df_waiver = pd.DataFrame(waiver_data).sort_values(by='Score', ascending=False).head(20)
             try: st.dataframe(df_waiver, use_container_width=True)
             except: st.dataframe(df_waiver)
         else: st.error("No se encontraron jugadores.")
 
 st.markdown("---")
-st.caption("🚀 Fantasy GM Architect v2.3 | Hype Sensitivity Tuned")
+st.caption("🚀 Fantasy GM Architect v3.0 | The Weekly Grid")
