@@ -70,6 +70,35 @@ def calcular_stats_manuales(lineup):
     else: totales['FT%'] = 0.0
     return totales
 
+def obtener_datos_ownership(liga):
+    """
+    Función Parche: Descarga los datos de ownership directamente desde la API oculta
+    ya que la llamada estándar de free_agents() no los trae.
+    """
+    try:
+        # Solicitamos la vista 'kona_player_info' que incluye ownership
+        # Filtramos por Agentes Libres y Waivers para no descargar toda la base de datos
+        filters = {"players": {"filterStatus": {"value": ["FREEAGENT", "WAIVERS"]}}}
+        headers = {'x-fantasy-filter': str(filters)}
+        
+        # Usamos el objeto interno de request de la liga para mantener cookies
+        data = liga.espn_request.get_league_json(view='kona_player_info')
+        
+        ownership_map = {}
+        for p_data in data.get('players', []):
+            pid = p_data.get('id')
+            player_info = p_data.get('player', {})
+            ownership = player_info.get('ownership', {})
+            
+            ownership_map[pid] = {
+                'percentOwned': ownership.get('percentOwned', 0.0),
+                'percentChange': ownership.get('percentChange', 0.0)
+            }
+        return ownership_map
+    except Exception as e:
+        print(f"Error obteniendo ownership: {e}")
+        return {}
+
 # --- INTERFAZ PRINCIPAL ---
 
 st.sidebar.header("⚙️ Centro de Mando")
@@ -198,7 +227,7 @@ if mi_equipo_obj:
         st.error(f"🚨 JUGADORES 'OUT' EN ACTIVO: {', '.join(lesionados_activos['Jugador'].tolist())}")
 
 # ==========================================
-# SECCIÓN 3: WAIVER KING (CON HYPE DETECTOR)
+# SECCIÓN 3: WAIVER KING (CON DATA ENRICHMENT)
 # ==========================================
 st.markdown("---")
 st.header("💎 Waiver King (Mercado + Hype)")
@@ -218,42 +247,44 @@ if st.button("🔎 Buscar Joyas"):
             if equipos_hoy: st.info(f"Equipos hoy: {len(equipos_hoy)}")
             else: st.warning("No hay partidos hoy (o error API).")
 
-        # Escaneamos más jugadores para encontrar los Trending
+        # 1. Obtenemos datos de propiedad ANTES de procesar
+        # Esto es lo que faltaba: una consulta separada para llenar los datos
+        ownership_map = obtener_datos_ownership(liga)
+
         free_agents = liga.free_agents(size=250)
         waiver_data = []
         
         for p in free_agents:
-            # 1. Filtro FA
+            # Filtros básicos
             acq = getattr(p, 'acquisitionType', [])
             if len(acq) > 0: continue 
             if p.injuryStatus == 'OUT': continue
             if solo_hoy and equipos_hoy and p.proTeam not in equipos_hoy: continue
             
-            # 2. Stats
             stats = p.stats.get(f"{season_id}_total", {}).get('avg', {})
             if not stats: stats = p.stats.get(f"{season_id}_projected", {}).get('avg', {})
             if not stats: continue
             
-            # 3. Minutos
             mpg = stats.get('MIN', 0)
             if mpg < min_minutos: continue
             
-            # 4. Cálculo de Hype (Tendencias)
-            # percent_owned = % de equipos que lo tienen
-            # percent_change = % de cambio reciente (Esto es el HYPE)
-            own_pct = getattr(p, 'percent_owned', 0.0)
-            own_chg = getattr(p, 'percent_change', 0.0)
+            # --- INYECCIÓN DE DATOS DE HYPE ---
+            # Buscamos el ID del jugador en nuestro mapa de ownership
+            # Si no está, asumimos 0.0
+            p_own_data = ownership_map.get(p.playerId, {'percentOwned': 0.0, 'percentChange': 0.0})
+            
+            own_pct = p_own_data['percentOwned']
+            own_chg = p_own_data['percentChange']
             
             trend_icon = ""
-            if own_chg > 4.0: trend_icon = "🔥🔥" # Super Hype
-            elif own_chg > 1.5: trend_icon = "🔥" # Hot
-            elif own_chg > 0.1: trend_icon = "📈" # Subiendo
-            elif own_chg < -1.0: trend_icon = "❄️" # Frio/Drop
+            if own_chg > 4.0: trend_icon = "🔥🔥" 
+            elif own_chg > 1.5: trend_icon = "🔥" 
+            elif own_chg > 0.1: trend_icon = "📈" 
+            elif own_chg < -1.0: trend_icon = "❄️"
             
-            # Formato bonito para la tabla: "+5.2%" o "-1.0%"
             trend_txt = f"{trend_icon} {own_chg:+.1f}%"
 
-            # 5. Score Base
+            # Score Base
             score = mpg * 0.5
             match_cats = []
             
@@ -266,15 +297,15 @@ if st.button("🔎 Buscar Joyas"):
             else:
                 score += stats.get('PTS', 0) + stats.get('REB', 0) + stats.get('AST', 0)
             
-            # BONUS POR HYPE: Si mucha gente lo ficha, sube en tu ranking
+            # Bonus por Hype
             if own_chg > 2.0: score += 15
             elif own_chg > 0.5: score += 5
 
             waiver_data.append({
                 'Nombre': p.name,
                 'Equipo': p.proTeam,
-                'Trend': trend_txt,     # <--- NUEVA COLUMNA
-                'Own%': f"{own_pct:.1f}%", # <--- NUEVA COLUMNA
+                'Trend': trend_txt,     
+                'Own%': f"{own_pct:.1f}%", 
                 'Min': round(mpg, 1),
                 'Score': round(score, 1),
                 'Ayuda en': ", ".join(match_cats) if match_cats else "General"
@@ -282,7 +313,6 @@ if st.button("🔎 Buscar Joyas"):
             
         if waiver_data:
             df_waiver = pd.DataFrame(waiver_data)
-            # Ordenamos por Score, pero el Score ya incluye el bonus de Hype
             df_waiver = df_waiver.sort_values(by='Score', ascending=False).head(20)
             try:
                 st.dataframe(df_waiver, use_container_width=True)
@@ -292,4 +322,4 @@ if st.button("🔎 Buscar Joyas"):
             st.error("No se encontraron jugadores.")
 
 st.markdown("---")
-st.caption("🚀 Fantasy GM Architect v2.0 | Hype Detector Enabled")
+st.caption("🚀 Fantasy GM Architect v2.1 | Hype Data Patch Applied")
