@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import requests
+import json  # <--- CRUCIAL PARA EL ARREGLO
 from datetime import datetime
 import sys
 import os
@@ -72,17 +73,38 @@ def calcular_stats_manuales(lineup):
 
 def obtener_datos_ownership(liga):
     """
-    Función Parche: Descarga los datos de ownership directamente desde la API oculta
-    ya que la llamada estándar de free_agents() no los trae.
+    Función Parcheada (V2.2):
+    Usa requests directo y json.dumps para asegurar que el header sea válido.
     """
     try:
-        # Solicitamos la vista 'kona_player_info' que incluye ownership
-        # Filtramos por Agentes Libres y Waivers para no descargar toda la base de datos
-        filters = {"players": {"filterStatus": {"value": ["FREEAGENT", "WAIVERS"]}}}
-        headers = {'x-fantasy-filter': str(filters)}
+        # 1. Construimos la URL
+        year = liga.year
+        league_id = liga.league_id
+        url = f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/fba/seasons/{year}/segments/0/leagues/{league_id}"
+
+        # 2. El Filtro (LA CLAVE: Usar json.dumps)
+        # Pedimos jugadores libres/waivers, limitamos a 500 para velocidad
+        filters = {
+            "players": {
+                "filterStatus": {"value": ["FREEAGENT", "WAIVERS"]},
+                "limit": 500,
+                "sortPercOwned": {"sortPriority": 1, "sortAsc": False}
+            }
+        }
         
-        # Usamos el objeto interno de request de la liga para mantener cookies
-        data = liga.espn_request.get_league_json(view='kona_player_info')
+        headers = {
+            'x-fantasy-filter': json.dumps(filters) # <--- AQUÍ ESTABA EL ERROR (necesita json string)
+        }
+        
+        # 3. Parámetros
+        params = {'view': 'kona_player_info'}
+        
+        # 4. Usamos las cookies que ya tiene la librería espn_api
+        cookies = liga.espn_request.cookies
+
+        # 5. Petición Manual Blindada
+        r = requests.get(url, params=params, headers=headers, cookies=cookies)
+        data = r.json()
         
         ownership_map = {}
         for p_data in data.get('players', []):
@@ -95,8 +117,9 @@ def obtener_datos_ownership(liga):
                 'percentChange': ownership.get('percentChange', 0.0)
             }
         return ownership_map
+
     except Exception as e:
-        print(f"Error obteniendo ownership: {e}")
+        print(f"Error ownership V2.2: {e}")
         return {}
 
 # --- INTERFAZ PRINCIPAL ---
@@ -227,7 +250,7 @@ if mi_equipo_obj:
         st.error(f"🚨 JUGADORES 'OUT' EN ACTIVO: {', '.join(lesionados_activos['Jugador'].tolist())}")
 
 # ==========================================
-# SECCIÓN 3: WAIVER KING (CON DATA ENRICHMENT)
+# SECCIÓN 3: WAIVER KING (CON HYPE FIX V2.2)
 # ==========================================
 st.markdown("---")
 st.header("💎 Waiver King (Mercado + Hype)")
@@ -247,15 +270,13 @@ if st.button("🔎 Buscar Joyas"):
             if equipos_hoy: st.info(f"Equipos hoy: {len(equipos_hoy)}")
             else: st.warning("No hay partidos hoy (o error API).")
 
-        # 1. Obtenemos datos de propiedad ANTES de procesar
-        # Esto es lo que faltaba: una consulta separada para llenar los datos
+        # LLAMADA CORREGIDA PARA OBTENER OWNERSHIP
         ownership_map = obtener_datos_ownership(liga)
 
         free_agents = liga.free_agents(size=250)
         waiver_data = []
         
         for p in free_agents:
-            # Filtros básicos
             acq = getattr(p, 'acquisitionType', [])
             if len(acq) > 0: continue 
             if p.injuryStatus == 'OUT': continue
@@ -268,13 +289,11 @@ if st.button("🔎 Buscar Joyas"):
             mpg = stats.get('MIN', 0)
             if mpg < min_minutos: continue
             
-            # --- INYECCIÓN DE DATOS DE HYPE ---
-            # Buscamos el ID del jugador en nuestro mapa de ownership
-            # Si no está, asumimos 0.0
-            p_own_data = ownership_map.get(p.playerId, {'percentOwned': 0.0, 'percentChange': 0.0})
-            
-            own_pct = p_own_data['percentOwned']
-            own_chg = p_own_data['percentChange']
+            # CRUCE DE DATOS HYPE
+            # Buscamos por ID. Si no está en el mapa, es 0.0
+            p_data = ownership_map.get(p.playerId, {})
+            own_pct = p_data.get('percentOwned', 0.0)
+            own_chg = p_data.get('percentChange', 0.0)
             
             trend_icon = ""
             if own_chg > 4.0: trend_icon = "🔥🔥" 
@@ -284,7 +303,6 @@ if st.button("🔎 Buscar Joyas"):
             
             trend_txt = f"{trend_icon} {own_chg:+.1f}%"
 
-            # Score Base
             score = mpg * 0.5
             match_cats = []
             
@@ -297,7 +315,6 @@ if st.button("🔎 Buscar Joyas"):
             else:
                 score += stats.get('PTS', 0) + stats.get('REB', 0) + stats.get('AST', 0)
             
-            # Bonus por Hype
             if own_chg > 2.0: score += 15
             elif own_chg > 0.5: score += 5
 
@@ -322,4 +339,4 @@ if st.button("🔎 Buscar Joyas"):
             st.error("No se encontraron jugadores.")
 
 st.markdown("---")
-st.caption("🚀 Fantasy GM Architect v2.1 | Hype Data Patch Applied")
+st.caption("🚀 Fantasy GM Architect v2.2 | JSON Header Fix")
