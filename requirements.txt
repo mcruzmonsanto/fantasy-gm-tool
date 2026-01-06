@@ -1,0 +1,5 @@
+streamlit
+pandas
+requests
+espn_api
+pytz
