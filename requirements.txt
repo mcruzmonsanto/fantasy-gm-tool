@@ -1,32 +1,14 @@
-# Fantasy GM Pro v3.0 - Dependencies
-# Core Framework
-streamlit>=1.35.0
-
-# Data Processing
-pandas>=2.0.0
-numpy>=1.24.0,<2.0.0
-
-# ESPN API
-espn-api>=0.35.0
-
-# HTTP & Networking
-requests>=2.31.0
-urllib3>=2.0.0,<3.0.0
-
-# Timezone & Datetime
-pytz>=2023.3
-python-dateutil>=2.8.2
-
-# Environment & Config
-python-dotenv>=1.0.0
-
-# Utilities
-tenacity>=8.0.0
-cachetools>=5.0.0
-
-# Logging & Monitoring
-loguru>=0.7.0
-
-# Web Scraping
-beautifulsoup4>=4.12.0
-lxml>=4.9.0
+# Fantasy GM Pro - Streamlit Cloud Compatible
+streamlit
+pandas
+numpy
+espn-api
+requests
+pytz
+python-dateutil
+python-dotenv
+tenacity
+cachetools
+loguru
+beautifulsoup4
+lxml
