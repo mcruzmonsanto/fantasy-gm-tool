@@ -1,5 +1,33 @@
-streamlit
-pandas
-requests
-espn_api
-pytz
+# Fantasy GM Pro v3.0 - Dependencies
+# Core Framework
+streamlit==1.40.2
+
+# Data Processing
+pandas==2.2.0
+numpy==1.26.3
+
+# ESPN API (actualizada)
+espn-api>=0.35.0
+
+# HTTP & Networking
+requests==2.31.0
+urllib3>=2.1.0,<3.0.0
+
+# Timezone & Datetime
+pytz>=2024.1
+python-dateutil>=2.8.2
+
+# Environment & Config
+python-dotenv>=1.0.0
+
+# Utilities
+tenacity>=8.2.3  # Retry logic
+cachetools>=5.3.2  # Better caching
+
+# Logging & Monitoring
+loguru>=0.7.2  # Better logging
+
+# AI & Analysis
+numpy>=1.26.0,<2.0.0  # For intelligent analysis
+beautifulsoup4>=4.12.0  # Web scraping
+lxml>=4.9.0  # HTML parsing

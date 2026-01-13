@@ -2,6 +2,7 @@
 
 Herramienta avanzada de análisis para ligas de Fantasy Basketball en ESPN.
 
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://share.streamlit.io/)
 ![Version](https://img.shields.io/badge/version-2.0-blue)
 ![Python](https://img.shields.io/badge/python-3.11+-green)
 ![License](https://img.shields.io/badge/license-MIT-orange)
@@ -35,7 +36,7 @@ Fantasy GM Pro es una aplicación web construida con Streamlit que te ayuda a to
 ### Paso 1: Clonar el Repositorio
 
 ```bash
-git clone https://github.com/tuusuario/fantasy-gm-tool.git
+git clone https://github.com/mcruzmonsanto/fantasy-gm-tool.git
 cd fantasy-gm-tool
 ```
 
@@ -87,6 +88,26 @@ pip install -r requirements.txt
    - `espn_s2`: Copia el valor completo
 
 ---
+
+## 🌐 Deploy a Streamlit Cloud
+
+¿Quieres tener Fantasy GM Pro en la nube sin preocuparte por ejecutarlo localmente?
+
+### Deploy Rápido
+
+[![Deploy to Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://share.streamlit.io/)
+
+1. Haz fork de este repositorio
+2. Ve a [share.streamlit.io](https://share.streamlit.io/)
+3. Conecta tu cuenta de GitHub
+4. Selecciona este repositorio y el archivo `app.py`
+5. Configura tus credenciales en "Secrets" (ver `.streamlit/secrets.toml.example`)
+6. ¡Deploy!
+
+### Guía Detallada
+
+Para instrucciones completas paso a paso, consulta [DEPLOYMENT.md](DEPLOYMENT.md).
+
 
 ## 🎮 Uso
 
@@ -268,7 +289,7 @@ Este proyecto está bajo la Licencia MIT. Ver `LICENSE` para más detalles.
 
 **Max**
 
-- GitHub: [@tuusuario](https://github.com/tuusuario)
+- GitHub: [@mcruzmonsanto](https://github.com/mcruzmonsanto)
 
 ---
 
@@ -284,7 +305,7 @@ Este proyecto está bajo la Licencia MIT. Ver `LICENSE` para más detalles.
 
 Si encuentras algún bug o tienes sugerencias:
 
-1. Abre un [Issue](https://github.com/tuusuario/fantasy-gm-tool/issues)
+1. Abre un [Issue](https://github.com/mcruzmonsanto/fantasy-gm-tool/issues)
 2. Describe el problema con detalles
 3. Incluye logs si es posible
 

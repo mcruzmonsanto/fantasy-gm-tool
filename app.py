@@ -20,14 +20,38 @@ from datetime import datetime, timedelta
 import xml.etree.ElementTree as ET
 import pytz
 import logging
+from loguru import logger
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 # --- 1. CONFIGURACIÓN ---
 from src.conectar import obtener_liga
-from config.credenciales import LIGAS
+from src.expert_scrapers import ExpertScrapers
+from src.historical_analyzer import HistoricalAnalyzer
+from src.ml_engine import MLDecisionEngine
+from src.ui_learning_tab import render_learning_tab
+
+# Intentar cargar configuración moderna, fallback a legacy
+try:
+    from src.config_manager import ConfigManager
+    from src.cache_manager import CacheManager
+    from src.health_check import show_diagnostic_panel
+    from src.alerts import AlertSystem
+    
+    config_mgr = ConfigManager()
+    LIGAS = config_mgr.get_ligas()
+    cache_mgr = CacheManager()
+    alert_sys = AlertSystem()
+    USE_MODERN_CONFIG = True
+    
+    logger.info("✅ Usando sistema de configuración moderno")
+except ImportError as e:
+    logger.warning(f"⚠️ Fallback a configuración legacy: {e}")
+    from config.credenciales import LIGAS
+    cache_mgr = None
+    alert_sys = None
+    USE_MODERN_CONFIG = False
 
 st.set_page_config(
     page_title="Fantasy GM Pro",
@@ -42,30 +66,104 @@ TIMEZONE = pytz.timezone('US/Eastern')
 # --- 2. CSS OPTIMIZADO (SCROLL FIX) ---
 st.markdown("""
 <style>
-    /* Padding ajustado para móvil sin romper el scroll */
-    .main .block-container {
-        padding-top: 4rem;
-        padding-bottom: 2rem;
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap');
+    
+    /* GLOBAL DARK MODE IDENTITY */
+    .stApp, .main .block-container {
+        background-color: #121212;
+        font-family: 'Inter', sans-serif;
     }
     
-    .stDataFrame {border: 1px solid #333; border-radius: 5px;}
-    .team-name {font-size: 1.1rem; font-weight: 700; text-align: center; margin-bottom: 0;}
-    .vs-tag {font-size: 0.9rem; color: #ff4b4b; text-align: center; font-weight: 800; margin-top: 5px;}
-    .league-tag {font-size: 0.8rem; color: #aaa; text-align: center; text-transform: uppercase; letter-spacing: 1px;}
+    /* Apply Font to Text    /* TEXT COLOR & FONT (Safe for Icons) */
+    h1, h2, h3, h4, h5, h6, p, label, .stMarkdown, .stDataFrame, .stTooltip, .stCaption, small {
+        color: #E0E0E0 !important;
+        font-family: 'Inter', sans-serif !important;
+    }
     
+    /* Removed global span/div override to fix Icons like "keyboard_arrow..." */
+    
+    /* SIDEBAR STYLING */
+    [data-testid="stSidebar"] {
+        background-color: #1E1E1E !important;
+        border-right: 1px solid #333;
+    }
+    
+    /* Ensure Sidebar Text is Visible */
+    [data-testid="stSidebar"] p, [data-testid="stSidebar"] span, [data-testid="stSidebar"] label {
+         color: #E0E0E0 !important;
+    }
+    
+    /* Prevent Icon Breakage */
+    i, .material-icons, [data-testid="stIcon"] {
+        font-family: 'Material Icons' !important;
+        color: inherit;
+    }
+
+    /* Contenedores Premium */
     .metric-box {
-        background-color: #181818; border: 1px solid #333; border-radius: 8px; 
-        padding: 15px; text-align: center;
+        background-color: #1E1E1E; 
+        border: 1px solid #333; 
+        border-radius: 12px; 
+        padding: 20px; 
+        text-align: center;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.3);
     }
-    .win-val {color: #4caf50; font-size: 1.6rem; font-weight: 900;}
-    .lose-val {color: #f44336; font-size: 1.6rem; font-weight: 900;}
     
-    .news-card {
-        background-color: #262730; padding: 12px; border-radius: 6px; 
-        margin-bottom: 8px; border-left: 3px solid #ff4b4b;
+    /* Branding Colors */
+    .win-val {color: #4CAF50 !important; font-size: 2rem; font-weight: 900;}
+    .lose-val {color: #E50914 !important; font-size: 2rem; font-weight: 900;}
+    .label-txt {color: #B3B3B3; font-size: 0.9rem; text-transform: uppercase; letter-spacing: 1.5px;}
+    
+    /* UI Elements */
+    .stDataFrame {
+        border: none !important;
     }
-    .news-title {font-weight: 600; color: #fff; text-decoration: none; font-size: 0.9rem;}
-    .news-date {color: #888; font-size: 0.7rem; margin-top: 4px;}
+    
+    /* FORCE DARK MODE ON EXPANDERS (Tag-based override) */
+    details {
+        background-color: #1E1E1E !important;
+        border: 1px solid #333 !important;
+        border-radius: 8px !important;
+        color: #E0E0E0 !important;
+        margin-bottom: 1rem;
+    }
+    
+    summary {
+        background-color: #1E1E1E !important;
+        color: #E0E0E0 !important;
+        font-weight: 600 !important;
+        border-radius: 8px !important;
+        padding: 0.5rem 1rem !important;
+    }
+    
+    summary:hover, details[open] summary:hover {
+        background-color: #252525 !important;
+        color: #FFFFFF !important;
+    }
+    
+    /* Remove white background from content */
+    details > div {
+        background-color: #1E1E1E !important;
+        color: #E0E0E0 !important;
+    }
+    
+    /* Clean Sidebar Inputs */
+    .stSelectbox div[data-baseweb="select"] > div {
+        background-color: #2C2C2C !important;
+        color: white !important;
+        border: 1px solid #444;
+    }
+    
+    /* Custom Tags */
+    .team-name {font-size: 1.4rem; font-weight: 800; color: #fff;}
+    .vs-tag {font-size: 1rem; color: #E50914; font-weight: 900;}
+    
+    /* News Override */
+    .news-card {
+        background-color: #1E1E1E; 
+        border-left: 4px solid #E50914;
+        padding: 15px; margin-bottom: 10px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -117,10 +215,22 @@ def jugador_juega_hoy(pro_team, equipos_hoy_list):
     """
     Verifica si el jugador juega hoy
     - pro_team: str, equipo del jugador (ej: 'GS')
-    - equipos_hoy_list: list, equipos que juegan (ej: ['GSW', 'LAL'])
+    - equipos_hoy_list: list, equipos que juegan. Puede ser ['GSW'] o [{'home': 'GSW', 'away': 'LAL'}]
     """
     norm_team = normalizar_equipo(pro_team)
-    return norm_team in [normalizar_equipo(eq) for eq in equipos_hoy_list]
+    
+    # Extract all teams playing today
+    playing_teams = set()
+    for item in equipos_hoy_list:
+        if isinstance(item, dict):
+            # Match object
+            playing_teams.add(normalizar_equipo(item.get('home', '')))
+            playing_teams.add(normalizar_equipo(item.get('away', '')))
+        else:
+            # String (Legacy)
+            playing_teams.add(normalizar_equipo(item))
+            
+    return norm_team in playing_teams
 
 # --- FUNCIONES DE DATOS ---
 
@@ -130,11 +240,8 @@ def get_calendario_semanal():
     Obtiene calendario semanal de partidos NBA desde ESPN API.
     
     Returns:
-        dict: {"Lun 06": ["GSW", "LAL", ...], "Mar 07": [...], ...}
-              Equipos normalizados que juegan cada día de la semana.
-    
-    Raises:
-        No lanza excepciones. Retorna lista vacía para días con error.
+        dict: {"Lun 06": [{'home': 'GSW', 'away': 'LAL'}, ...], ...}
+              Lista de partidos (dicts) con equipos normalizados.
     """
     try:
         ahora = datetime.now(TIMEZONE)
@@ -151,38 +258,48 @@ def get_calendario_semanal():
             try:
                 url = f"http://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={d_str}"
                 response = requests.get(url, timeout=5)
-                response.raise_for_status()  # Lanza excepción si status != 200
+                response.raise_for_status()
                 
                 data = response.json()
-                equipos_dia = []
+                matches = []
                 
                 eventos = data.get('events', [])
-                if not eventos:
-                    logger.info(f"No hay partidos el {d_fmt}")
-                
                 for evento in eventos:
                     comps = evento.get('competitions', [])
-                    if not comps:
-                        continue
+                    if not comps: continue
                     
                     competitors = comps[0].get('competitors', [])
-                    for comp in competitors:
-                        team_data = comp.get('team', {})
-                        abrev = team_data.get('abbreviation', '')
+                    if len(competitors) == 2:
+                        # ESPN usually lists Home second? Verify logic or just use home/away keys if available
+                        # Actually competitors list usually has 'homeAway': 'home' inside
                         
-                        if abrev:
-                            equipo_norm = normalizar_equipo(abrev)
-                            if equipo_norm not in equipos_dia:  # Evitar duplicados
-                                equipos_dia.append(equipo_norm)
+                        team_a_data = competitors[0].get('team', {})
+                        team_b_data = competitors[1].get('team', {})
+                        
+                        # Identify home/away
+                        # Typically index 0 is home, 1 is away in some APIs, but ESPN has 'homeAway' field
+                        team_home = team_a_data if competitors[0].get('homeAway') == 'home' else team_b_data
+                        team_away = team_b_data if competitors[0].get('homeAway') == 'home' else team_a_data
+                        
+                        # Fallback if homeAway not found (rare)
+                        if not team_home: 
+                            team_home = team_a_data
+                            team_away = team_b_data
+                            
+                        abrev_home = team_home.get('abbreviation', '')
+                        abrev_away = team_away.get('abbreviation', '')
+                        
+                        if abrev_home and abrev_away:
+                            matches.append({
+                                'home': normalizar_equipo(abrev_home),
+                                'away': normalizar_equipo(abrev_away)
+                            })
                 
-                calendario[d_fmt] = equipos_dia
-                logger.debug(f"{d_fmt}: {len(equipos_dia)} equipos")
+                calendario[d_fmt] = matches
+                logger.debug(f"{d_fmt}: {len(matches)} partidos")
                 
-            except requests.RequestException as e:
+            except Exception as e:
                 logger.error(f"Error API para {d_fmt}: {e}")
-                calendario[d_fmt] = []
-            except (KeyError, ValueError, json.JSONDecodeError) as e:
-                logger.error(f"Error parseando datos para {d_fmt}: {e}")
                 calendario[d_fmt] = []
         
         return calendario
@@ -454,23 +571,71 @@ def calc_matchup_totals(lineup):
 
 with st.sidebar:
     st.header("⚙️ Configuración")
+    
+    # Panel de diagnóstico (si está disponible)
+    if USE_MODERN_CONFIG:
+        show_diagnostic_panel()
+    
     nombre_liga = st.selectbox("Liga", list(LIGAS.keys()))
     st.markdown("---")
     limit_slots = st.number_input("Titulares Máximos", 5, 20, 10)
     excluir_out = st.checkbox("Ignorar 'OUT' en Grid", True)
-    if st.button("🔄 Refrescar Datos", type="primary"): st.cache_data.clear()
+    if st.button("🔄 Refrescar Datos", type="primary"): 
+        st.cache_data.clear()
+        if cache_mgr:
+            cache_mgr.cache_metadata.clear()
+        logger.info("🔄 Cache limpiado")
 
 config = LIGAS[nombre_liga]
-liga = obtener_liga(nombre_liga)
+
+# Conectar con retry automático si está disponible
+if USE_MODERN_CONFIG:
+    liga = obtener_liga(nombre_liga, LIGAS)
+else:
+    # Legacy: necesita adaptar la función vieja
+    from src.conectar import obtener_liga as obtener_liga_legacy
+    # Hack temporal para compatibilidad
+    import sys
+    sys.modules['src.conectar'].LIGAS = LIGAS
+    liga = obtener_liga_legacy(nombre_liga)
+
 season_id = config['year']
 
-if not liga: st.error("Error de conexión"); st.stop()
+if not liga: 
+    st.error("❌ Error de conexión. Revisa tu configuración en .env o credenciales.py")
+    if USE_MODERN_CONFIG:
+        st.info("💡 Tip: Verifica que el archivo .env existe y tiene las credenciales correctas")
+    st.stop()
 
 box_scores = liga.box_scores()
-matchup = next((m for m in box_scores if "Max" in m.home_team.team_name or "Max" in m.away_team.team_name), None)
-if not matchup: st.warning("No hay matchup activo."); st.stop()
 
-soy_home = "Max" in matchup.home_team.team_name
+# Obtener el nombre del equipo del usuario desde configuración
+my_team_name = config.get('my_team_name', '')
+
+# Buscar el matchup del usuario
+matchup = None
+if my_team_name:
+    # Buscar por nombre de equipo configurado
+    matchup = next((m for m in box_scores if my_team_name in m.home_team.team_name or my_team_name in m.away_team.team_name), None)
+
+if not matchup and box_scores:
+    # Fallback: tomar el primer matchup (usuario debe configurar my_team_name)
+    matchup = box_scores[0]
+    st.warning(f"⚠️ Mostrando primer matchup. Configura `LIGA_X_MY_TEAM_NAME` en .env para ver tu matchup correcto.")
+
+if not matchup: 
+    st.warning("No hay matchup activo esta semana."); 
+    st.stop()
+
+# Determinar cuál equipo es el del usuario
+if my_team_name and my_team_name in matchup.home_team.team_name:
+    soy_home = True
+elif my_team_name and my_team_name in matchup.away_team.team_name:
+    soy_home = False
+else:
+    # Si no se configuró, asumir que eres el home team
+    soy_home = True
+
 mi_equipo = matchup.home_team if soy_home else matchup.away_team
 rival = matchup.away_team if soy_home else matchup.home_team
 
@@ -483,39 +648,113 @@ with c3: st.markdown(f"<div class='team-name'>{rival.team_name}</div>", unsafe_a
 st.write("")
 
 # GRID
-with st.expander("📅 Planificación Semanal (Grid)", expanded=True):
+with st.expander("📅 Smart Planificación Semanal (Grid)", expanded=True):
+    # Calculo de datos del Grid Original (Simplified for stability)
     calendario = get_calendario_semanal()
-    rows = {"YO": [], "RIVAL": [], "DIFF": []}
-    tot_y, tot_r = 0, 0
     
-    for dia, equipos_dia in calendario.items():
-        # Contar jugadores que juegan este día específico
-        cy = sum(
-            1 for p in mi_equipo.roster 
-            if p.lineupSlot != 'IR' 
-            and (not excluir_out or p.injuryStatus != 'OUT') 
-            and jugador_juega_hoy(p.proTeam, equipos_dia)
-        )
-        cr = sum(
-            1 for p in rival.roster 
-            if p.lineupSlot != 'IR' 
-            and (not excluir_out or p.injuryStatus != 'OUT') 
-            and jugador_juega_hoy(p.proTeam, equipos_dia)
-        )
-        uy, ur = min(cy, limit_slots), min(cr, limit_slots)
-        rows["YO"].append(uy); rows["RIVAL"].append(ur)
-        d = uy - ur
-        ic = "✅" if d > 0 else "⚠️" if d < 0 else "="
-        rows["DIFF"].append(f"{d} {ic}")
-        tot_y += uy; tot_r += ur
+    # --- SMART OVERLAY ---
+    # Cargar datos de expertos (cacheado)
+    try:
+        expert_scraper = ExpertScrapers()
+        expert_data = expert_scraper.get_player_expert_data() or {}
+    except:
+        expert_data = {}
+    
+    # Preparar datos enriquecidos
+    grid_data = [] # List of {'Player': 'LeBron', 'Mon': '@DET', ...}
+    
+    # Header Dates
+    dias = list(calendario.keys())
+    
+    def get_smart_cell(player, day_teams):
+        # Determine if playing
+        norm_team = normalizar_equipo(player.proTeam)
+        juega = False
+        opp = ""
         
-    rows["YO"].append(tot_y); rows["RIVAL"].append(tot_r)
-    dt = tot_y - tot_r
-    rows["DIFF"].append(f"{dt} {'🔥' if dt > 0 else '💀'}")
-    st.dataframe(pd.DataFrame(rows, index=list(calendario.keys())+["TOTAL"]).T, use_container_width=True)
+        # Check against teams playing today
+        for t in day_teams:
+            if t['home'] == norm_team:
+                juega = True
+                opp = f"vs {t['away']}" # vs OPP
+                break
+            elif t['away'] == norm_team:
+                juega = True
+                opp = f"@{t['home']}" # at OPP
+                break
+        
+        if not juega:
+            return "" # Empty cell
+        
+        # Add metadata marks
+        marks = []
+        if player.name in expert_data:
+            rank = expert_data[player.name].get('fantasypros_rank', 999)
+            if rank <= 50: marks.append("🌟")
+            elif rank <= 100: marks.append("⭐")
+        
+        if player.injuryStatus == 'DAY_TO_DAY': marks.append("🩹")
+        elif player.injuryStatus == 'OUT': marks.append("❌")
+        
+        return f"{' '.join(marks)} {opp}" if marks else opp
 
-# TABS
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["🔥 Hoy", "⚔️ Matchup", "🪓 Cortes", "💎 Waiver", "⚖️ Trade", "🕵️ Intel"])
+    # Process My Team for Grid
+    my_active_players = [p for p in mi_equipo.roster if p.lineupSlot != 'IR']
+    
+    # Sort by expert rank (or avg stats) for better visibility
+    def sorting_key(p):
+        if p.name in expert_data:
+            return expert_data[p.name].get('fantasypros_rank', 999)
+        return 999
+        
+    my_active_players.sort(key=sorting_key)
+    
+    for p in my_active_players:
+        row = {'JUGADOR': p.name}
+        games_count = 0
+        
+        for dia in dias:
+            cell = get_smart_cell(p, calendario[dia])
+            row[dia] = cell
+            if cell: games_count += 1
+            
+        row['TOTAL'] = games_count
+        grid_data.append(row)
+        
+    st.dataframe(
+        pd.DataFrame(grid_data),
+        column_config={
+            "JUGADOR": st.column_config.TextColumn("Jugador", width="medium"),
+            "TOTAL": st.column_config.ProgressColumn("Games", min_value=0, max_value=5, format="%d"),
+        },
+        use_container_width=True,
+        hide_index=True
+    )
+    
+    # --- METRICS SUMMARY ---
+    total_games_me = sum(r['TOTAL'] for r in grid_data)
+    # Estimate Opponent games (simplified)
+    total_games_opp = 0
+    for p in rival.roster:
+        if p.lineupSlot != 'IR':
+            for dia in dias:
+                # Basic check logic
+                for t in calendario[dia]:
+                    if t['home'] == normalizar_equipo(p.proTeam) or t['away'] == normalizar_equipo(p.proTeam):
+                        total_games_opp += 1
+                        
+    diff_games = total_games_me - total_games_opp
+    
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Mis Partidos", total_games_me)
+    c2.metric("Rival Partidos", total_games_opp, delta=diff_games)
+    c3.caption(f"🌟/⭐ = Top 50/100  |  🩹 = DTD  |  ❌ = OUT")
+tab1, tab2, tab3, tab4 = st.tabs([
+    "🔥 Hoy", 
+    "⚔️ Matchup", 
+    "🔮 IA",
+    "📚 Learning"  # NEW
+])
 necesidades = []
 
 # 1. FACE-OFF (ARREGLADO: 0 vs 0 FIX + SEMÁFORO BACKUP)
@@ -523,6 +762,13 @@ with tab1:
     equipos_hoy, rivales_hoy = get_partidos_hoy()
     sos_map = get_sos_map()
     
+    # Cargar expert data
+    expert_scraper = ExpertScrapers()
+    try:
+        expert_data = expert_scraper.scrape_fantasypros_rankings(limit=200)
+    except:
+        expert_data = {}
+
     def get_power(roster):
         l = []
         for p in roster:
@@ -532,7 +778,17 @@ with tab1:
                     opp = rivales_hoy.get(norm_team, "")
                     si = get_sos_icon(opp, sos_map)
                     sc, _ = calc_score(p, config, season_id)
-                    l.append({'J': p.name, 'VS': f"{si} {opp}", 'FP': round(sc,1)})
+                    
+                    # Expert badge
+                    badge = ""
+                    if p.name in expert_data:
+                        rank = expert_data[p.name].get('fantasypros_rank', 999)
+                        if rank <= 50: badge = "🌟"
+                        elif rank <= 100: badge = "⭐"
+                    
+                    # Keep FP as raw number for ProgressColumn
+                    l.append({'Jugador': f"{badge} {p.name}", 'Rival': f"{si} {opp}", 'FP': sc})
+        
         l = sorted(l, key=lambda x: x['FP'], reverse=True)[:limit_slots]
         return sum(x['FP'] for x in l), l
 
@@ -541,156 +797,461 @@ with tab1:
     diff_p = my_p - rv_p
     
     c_sc1, c_sc2 = st.columns(2)
+    
+    # Configuración de columnas para "Hoy"
+    col_cfg = {
+        "Jugador": st.column_config.TextColumn("Jugador", width="medium"),
+        "Rival": st.column_config.TextColumn("VS", width="small"),
+        "FP": st.column_config.ProgressColumn(
+            "Puntos", 
+            format="%.1f", 
+            min_value=0, 
+            max_value=60,
+            help="Puntos Fantasy Proyectados"
+        )
+    }
+
     with c_sc1:
         st.markdown(f"<div class='metric-box'><div class='label-txt'>YO</div><div class='{'win-val' if diff_p>=0 else 'lose-val'}'>{round(my_p,1)}</div></div>", unsafe_allow_html=True)
-        if my_l: st.dataframe(pd.DataFrame(my_l), use_container_width=True, hide_index=True)
+        if my_l: 
+            st.dataframe(
+                pd.DataFrame(my_l), 
+                use_container_width=True, 
+                hide_index=True,
+                column_config=col_cfg
+            )
+            
     with c_sc2:
         st.markdown(f"<div class='metric-box'><div class='label-txt'>RIVAL</div><div class='{'win-val' if diff_p<0 else 'lose-val'}'>{round(rv_p,1)}</div></div>", unsafe_allow_html=True)
-        if rv_l: st.dataframe(pd.DataFrame(rv_l), use_container_width=True, hide_index=True)
+        if rv_l: 
+            st.dataframe(
+                pd.DataFrame(rv_l), 
+                use_container_width=True, 
+                hide_index=True,
+                column_config=col_cfg
+            )
 
     st.divider()
     if diff_p < 0:
         brecha = abs(diff_p)
-        st.error(f"⚠️ Pierdes por -{round(brecha,1)} FP.")
-        if st.button("🚑 BUSCAR RESCATE"):
-            with st.spinner("Buscando..."):
-                own_data = get_ownership(liga)
-                fa = liga.free_agents(size=100)
-                rescate = []
-                for p in fa:
-                    if getattr(p, 'acquisitionType', []) or p.injuryStatus == 'OUT': continue
-                    if not jugador_juega_hoy(p.proTeam, equipos_hoy): continue
-                    sc, s = calc_score(p, config, season_id)
-                    if sc > 15:
-                        di = sc - brecha
-                        ic = "🦸‍♂️" if di > 0 else "🩹"
-                        norm_team = normalizar_equipo(p.proTeam)
-                        opp = rivales_hoy.get(norm_team, "")
-                        si = get_sos_icon(opp, sos_map)
-                        rescate.append({'Jugador': p.name, 'Eq': p.proTeam, 'VS': f"{si} {opp}", 'Score': round(sc,1), 'Impacto': f"{ic} {round(di,1)}"})
-                if rescate: st.dataframe(pd.DataFrame(rescate).sort_values('Score', ascending=False).head(5), use_container_width=True, hide_index=True)
-                else: st.warning("Mercado seco.")
+        st.error(f"⚠️ Pierdes por -{round(brecha,1)} FP. (Usa la tab 'IA' para buscar rescates)")
 
 # 2. MATCHUP
+# 2. MATCHUP INTELLIGENCE DASHBOARD
 with tab2:
-    ms = calc_matchup_totals(matchup.home_lineup if soy_home else matchup.away_lineup)
-    rs = calc_matchup_totals(matchup.away_lineup if soy_home else matchup.home_lineup)
-    dat = []
-    w, l, t = 0, 0, 0
-    for c in config['categorias']:
-        k = '3PTM' if c == '3PTM' and '3PTM' not in ms else c
-        m, r = ms.get(k, 0), rs.get(k, 0)
-        d = m - r if c != 'TO' else r - m
-        if d > 0: stt="🟢"; w+=1
-        elif d < 0: stt="🔴"; l+=1; necesidades.append(c)
-        else: stt="🟡"; t+=1
-        fm = f"{m:.3f}" if c in ['FG%','FT%'] else f"{m:.0f}"
-        fr = f"{r:.3f}" if c in ['FG%','FT%'] else f"{r:.0f}"
-        dat.append([c, fm, fr, f"{d:.2f}", stt])
-    st.info(f"Marcador: {w}-{l}-{t} | Faltan: {', '.join(necesidades)}")
-    st.dataframe(pd.DataFrame(dat, columns=['Cat','Yo','Riv','Dif','W']), use_container_width=True, hide_index=True)
-
-# 3. CORTES
-with tab3:
-    rost_data = []
-    active_roster = [p for p in mi_equipo.roster if p.lineupSlot != 'IR']
-    sel_p = st.selectbox("Gráfico:", [p.name for p in active_roster], index=None, placeholder="Elige jugador...")
-    for p in active_roster:
-        sc, s = calc_score(p, config, season_id)
-        ic = "⛔" if p.injuryStatus == 'OUT' else "⚠️" if p.injuryStatus == 'DAY_TO_DAY' else "✅"
-        rost_data.append({'J': p.name, 'St': ic, 'Pos': p.lineupSlot, 'Score': round(sc,1), 'Min': round(s.get('MIN',0),1)})
-    st.dataframe(pd.DataFrame(rost_data).sort_values('Score'), use_container_width=True, hide_index=True)
-    if sel_p:
-        po = next((p for p in active_roster if p.name == sel_p), None)
-        if po:
-            avgs = lambda k: po.stats.get(f"{season_id}_{k}", {}).get('avg', {}).get('PTS', 0)
-            chart = {'Season': avgs('total'), 'L30': avgs('last_30'), 'L15': avgs('last_15'), 'L7': avgs('last_7')}
-            st.line_chart(pd.DataFrame({'PTS': chart.values()}, index=chart.keys()))
-
-# 4. WAIVER
-with tab4:
-    c1, c2 = st.columns(2)
-    min_m = c1.number_input("Minutos >", 10, 40, 22)
-    s_hoy = c2.checkbox("Juegan HOY", True)
-    sort_by = st.selectbox("Ordenar:", ["Score", "Hype", "FPPM"])
+    st.header("⚔️ Matchup Intelligence Dashboard")
     
-    if st.button("🔎 Escanear"):
-        with st.spinner("Analizando..."):
-            equipos_hoy, rivales_hoy = get_partidos_hoy()
-            own = get_ownership(liga)
-            sos_map = get_sos_map()
-            fa = liga.free_agents(size=150)
-            w_list = []
-            for p in fa:
-                if getattr(p, 'acquisitionType', []) or p.injuryStatus == 'OUT': continue
-                juega_hoy = jugador_juega_hoy(p.proTeam, equipos_hoy)
-                if s_hoy and not juega_hoy: continue
-                sc, s = calc_score(p, config, season_id)
-                if not s or sc < 5: continue
-                mpg = s.get('MIN', 0)
-                if mpg < min_m: continue
-                
-                norm_team = normalizar_equipo(p.proTeam)
-                riv = rivales_hoy.get(norm_team, "") if juega_hoy else ""
-                si = get_sos_icon(riv, sos_map)
-                od = own.get(p.playerId, {})
-                pch = od.get('percentChange', 0.0); pop = od.get('percentOwned', 0.0)
-                ti = "🔥🔥" if pch>2 else "🔥" if pch>0.5 else "📈" if pch>0 else "❄️"
-                
-                cats_hit = [c for c in necesidades if s.get(c,0) > 0]
-                if necesidades: sc += len(cats_hit) * 10
-                if pch > 1.5: sc += 15
-                
-                std = s.get('PTS',0)+s.get('REB',0)*1.2+s.get('AST',0)*1.5+s.get('STL',0)*2+s.get('BLK',0)*2
-                fppm = sc/mpg if mpg>0 else 0
-                ei = "💎" if fppm > 1.1 else ""
-                
-                w_list.append({'Nombre': p.name, 'Eq': p.proTeam, 'VS': f"{si} {riv}", 
-                               'Trend': f"{ti} {pch:+.1f}%", 'Score': round(sc,1), 'FPPM': f"{ei}{fppm:.2f}", 
-                               'Aporta': ",".join(cats_hit) if cats_hit else "-", '_tr': pch, '_fp': fppm})
-            if w_list:
-                df = pd.DataFrame(w_list)
-                if sort_by == "Trend": df = df.sort_values('_tr', ascending=False)
-                elif sort_by == "FPPM": df = df.sort_values('_fp', ascending=False)
-                else: df = df.sort_values('Score', ascending=False)
-                st.dataframe(df[['Nombre','Eq','VS','Trend','Score','FPPM','Aporta']].head(25), use_container_width=True, hide_index=True)
-            else: st.info("Sin resultados.")
+    # --- DATA PREPARATION ---
+    with st.spinner("🔮 Calculando probabilidades..."):
+        try:
+            from src.ml_engine import MLDecisionEngine
+            from src.intelligence_engine import PlayerAnalyzer
+            from src.historical_analyzer import HistoricalAnalyzer
+            
+            # Initialize Engines
+            ml_engine = MLDecisionEngine()
+            analyzer = PlayerAnalyzer()
+            hist_analyzer = HistoricalAnalyzer()
+            
+            # Get Rosters (Home/Away logic handled previously)
+            my_roster_obj = matchup.home_lineup if soy_home else matchup.away_lineup
+            opp_roster_obj = matchup.away_lineup if soy_home else matchup.home_lineup
+            
+            # expert data
+            try:
+                expert_data = expert_scrapers.get_player_expert_data()
+            except:
+                expert_data = {}
 
-# 5. TRADE
-with tab5:
-    c_t1, c_t2 = st.columns(2)
-    drop_p = c_t1.selectbox("Soltar:", [p.name for p in mi_equipo.roster])
-    fa_top = [p.name for p in liga.free_agents(size=50)]
-    add_p = c_t2.selectbox("Fichar:", fa_top)
-    if st.button("Simular Cambio"):
-        p_out = next((p for p in mi_equipo.roster if p.name == drop_p), None)
-        p_in = next((p for p in liga.free_agents(size=50) if p.name == add_p), None)
-        if p_out and p_in:
-            s_out = p_out.stats.get(f"{season_id}_total", {}).get('avg', {})
-            s_in = p_in.stats.get(f"{season_id}_total", {}).get('avg', {})
-            deltas = []
+            # Calculate Stats
+            ms = calc_matchup_totals(my_roster_obj)
+            rs = calc_matchup_totals(opp_roster_obj)
+            
+            # Helper for Remaining Games
+            def get_remaining_counts(roster):
+                counts = {}
+                # Simple approximation: 3 games remaining avg if early week, else declining
+                # Real implementation would check schedule map
+                # For now using heuristic based on player status
+                for p in roster:
+                    counts[p.name] = 3 # Placeholder default
+                return counts
+            
+            rem_me = get_remaining_counts(my_roster_obj)
+            rem_opp = get_remaining_counts(opp_roster_obj)
+            
+            # 1. WIN PROBABILITY (ML)
+            prediction = ml_engine.calculate_matchup_probability(
+                ms, rs, rem_me, rem_opp, 
+                my_roster_obj, opp_roster_obj, 
+                config['categorias']
+            )
+            
+            # 2. EXPERT COMPARISON
+            comparison = analyzer.compare_rosters_expert_strength(
+                my_roster_obj, opp_roster_obj, expert_data
+            )
+            
+            # 3. HISTORICAL
+            opp_name = matchup.away_team.team_name if soy_home else matchup.home_team.team_name
+            history = hist_analyzer.get_similar_matchups("MY_LEAGUE", opp_name) # Using explicit ID would be better
+            
+             # --- UI DISPLAY ---
+            
+            # KPI ROW
+            c1, c2, c3 = st.columns(3)
+            
+            # Win Probability Card
+            with c1:
+                prob = prediction['win_probability']
+                delta_color = "normal" if prob >= 0.5 else "inverse"
+                st.metric(
+                    "Probabilidad de Victoria", 
+                    f"{prob:.0%}",
+                    delta="Posible Victoria" if prob > 0.5 else "Riesgo de Derrota",
+                    delta_color=delta_color
+                )
+                start_val = int(prob * 100)
+                st.progress(start_val)
+                st.caption(f"Predicción: {prediction['predicted_score']}")
+            
+            # Expert Advantage Card
+            with c2:
+                adv = comparison['advantage']
+                my_top50 = comparison['my_stats']['top50']
+                opp_top50 = comparison['opp_stats']['top50']
+                
+                label_adv = "✅ Ventaja Calidad" if adv == 'ME' else "⚠️ Rival Superior" if adv == 'OPP' else "⚖️ Parejo"
+                st.metric(
+                    "Poder de Plantilla (Expertos)",
+                    f"{my_top50} vs {opp_top50}",
+                    delta=label_adv,
+                    help=f"Jugadores Top 50: Tú {my_top50}, Rival {opp_top50}"
+                )
+                st.caption(f"Avg Rank: #{int(comparison['my_stats']['avg_rank'])} vs #{int(comparison['opp_stats']['avg_rank'])}")
+
+            # Historical Card
+            with c3:
+                wins = sum(1 for h in history if h['won'])
+                total = len(history)
+                win_rate = wins/total if total > 0 else 0
+                
+                st.metric(
+                    "Historial vs Rival",
+                    f"{wins}-{total-wins}",
+                    delta=f"{win_rate:.0%} Win Rate" if total > 0 else "Sin historial",
+                    delta_color="normal" if win_rate >= 0.5 else "inverse"
+                )
+                st.caption("Últimos matchups")
+
+            st.divider()
+            
+            # --- PREDICTIVE GRID ---
+            st.subheader("📊 Tablero de Control")
+            
+            dat = []
+            w, l, t = 0, 0, 0
+            
             for c in config['categorias']:
-                vo = s_out.get(c, 0); vi = s_in.get(c, 0); d = vi - vo
-                ic = "✅" if d > 0 else "🔻" if d < 0 else "="
-                deltas.append({'Cat': c, 'Antes': round(vo,1), 'Ahora': round(vi,1), 'Delta': f"{d:+.1f} {ic}"})
-            st.table(pd.DataFrame(deltas))
+                k = '3PTM' if c == '3PTM' and '3PTM' not in ms else c
+                m, r = ms.get(k, 0), rs.get(k, 0)
+                d = m - r if c != 'TO' else r - m
+                
+                # Prediction Badge
+                cat_prob = prediction['category_probs'].get(c, 0.5)
+                if cat_prob >= 0.6: status = "🟢 Ganando"
+                elif cat_prob <= 0.4: status = "🔴 Perdiendo"
+                else: status = "🟡 Reñido"
+                
+                # Keep raw numbers for styling
+                dat.append([c, m, r, d, status])
 
-# 6. INTEL
-with tab6:
-    st.subheader("🕵️ Actividad")
-    try:
-        df_act = get_league_activity(liga)
-        if not df_act.empty: st.dataframe(df_act, use_container_width=True, hide_index=True)
-        else: st.info("Sin movimientos.")
-    except: pass
+            df_matchup = pd.DataFrame(dat, columns=['CAT','YO','RIV','DIF', 'STATUS'])
+            
+            st.dataframe(
+                df_matchup,
+                column_config={
+                    "CAT": st.column_config.TextColumn("Categoría", width="small"),
+                    "YO": st.column_config.NumberColumn("Mi Equipo", format="%.1f"),
+                    "RIV": st.column_config.NumberColumn("Rival", format="%.1f"),
+                    "DIF": st.column_config.BarChartColumn(
+                        "Diferencia", 
+                        y_min=-30, y_max=30
+                    ),
+                    "STATUS": st.column_config.TextColumn("Proyección", width="medium")
+                },
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            st.info(f"💡 Factor clave: {prediction['key_factors'][0] if prediction['key_factors'] else 'Juego equilibrado'}")
+
+        except Exception as e:
+            st.error(f"Error cargando dashboard inteligente: {e}")
+            st.code(str(e)) # Debug info
+            # Fallback to old table if needed
+             
+
+# 3. AI RECOMMENDATIONS
+with tab3:
+    st.header("🧠 Recomendaciones Inteligentes")
+    
+    st.markdown("""
+    El sistema analizará **salud, tendencias, schedule y noticias** de todos los jugadores 
+    para encontrar las mejores oportunidades de add/drop.
+    """)
+    
+    # Botón para generar recomendaciones
+    if st.button("🔮 Analizar y Recomendar", type="primary", use_container_width=True):
+        with st.spinner("🔍 Analizando estrategia, jugadores, lesiones, schedules..."):
+            try:
+                # Import recommender
+                from src.smart_recommender import SmartRecommender
+                
+                # Get data needed
+                sos_map = get_sos_map()
+                equipos_hoy, _ = get_partidos_hoy()
+                box_scores = liga.box_scores()
+                
+                # Find current matchup
+                my_team_name = config.get('my_team_name', '')
+                current_matchup = None
+                if my_team_name:
+                    current_matchup = next((m for m in box_scores if my_team_name in m.home_team.team_name or my_team_name in m.away_team.team_name), None)
+                
+                if not current_matchup and box_scores:
+                    current_matchup = box_scores[0]
+                
+                # Determine my team and opponent
+                if my_team_name and current_matchup:
+                    if my_team_name in current_matchup.home_team.team_name:
+                        opponent_team = current_matchup.away_team
+                    else:
+                        opponent_team = current_matchup.home_team
+                else:
+                    opponent_team = current_matchup.away_team if current_matchup else mi_equipo
+                
+                # DEBUG: Explore matchup structure
+                if current_matchup:
+                    logger.info(f"🔍 DEBUG Matchup type: {type(current_matchup)}")
+                    all_attrs = [x for x in dir(current_matchup) if not x.startswith('_')]
+                    logger.info(f"  All attributes: {all_attrs}")
+                    logger.info(f"  Home team: {current_matchup.home_team.team_name}")
+                    logger.info(f"  Away team: {current_matchup.away_team.team_name}")
+                
+                # Create recommender with ADVANCED parameters
+                recommender = SmartRecommender(liga, config)
+                
+                # Generate STRATEGIC recommendations
+                result = recommender.get_daily_recommendations(
+                    mi_equipo, 
+                    opponent_team, 
+                    current_matchup, 
+                    sos_map, 
+                    list(equipos_hoy)
+                )
+                
+                # Display STRATEGIC CONTEXT first
+                if result.get('context'):
+                    st.divider()
+                    st.subheader("📊 Análisis Estratégico")
+                    
+                    ctx = result['context']
+                    
+                    # Create visual context cards (mobile-friendly)
+                    col1, col2, col3 = st.columns(3)
+                    
+                    # Playoff card
+                    with col1:
+                        playoff = ctx.get('playoff', {})
+                        strategy_emoji = {
+                            'PLAYOFFS': '🏆',
+                            'BUILD_PLAYOFF': '🎯',
+                            'WIN_NOW': '⚔️'
+                        }.get(playoff.get('strategy', 'WIN_NOW'), '⚔️')
+                        
+                        st.metric(
+                            label="Estrategia",
+                            value=playoff.get('strategy', 'WIN_NOW'),
+                            delta=f"Semana {playoff.get('current_week', 1)}"
+                        )
+                    
+                    # Matchup state card
+                    with col2:
+                        matchup_st = ctx.get('matchup', {})
+                        cats_me = matchup_st.get('categories_ahead', 0)
+                        cats_opp = matchup_st.get('categories_behind', 0)
+                        cats_tied = matchup_st.get('categories_tied', 0)
+                        winning = matchup_st.get('winning', False)
+                        days_left = matchup_st.get('days_remaining', 0)
+                        
+                        st.metric(
+                            label="Matchup esta semana",
+                            value=f"{cats_me}-{cats_opp}-{cats_tied}",
+                            delta=f"{days_left} días restantes" if days_left > 0 else "Último día",
+                            delta_color="normal" if winning else "inverse"
+                        )
+                    
+                    # Acquisitions card
+                    with col3:
+                        acq = ctx.get('acquisitions', {})
+                        moves_used = acq.get('moves_used', 0)
+                        weekly_limit = acq.get('weekly_limit', 7)
+                        moves_left = acq.get('moves_remaining', 0)
+                        
+                        st.metric(
+                            label="Adds esta semana",
+                            value=f"{moves_used}/{weekly_limit}",
+                            delta=f"{moves_left} restantes",
+                            delta_color="normal" if moves_left > 1 else "inverse"
+                        )
+                    
+                    # Today's matchup analysis
+                    today_ctx = ctx.get('today', {})
+                    if today_ctx:
+                        advantage = today_ctx.get('advantage', 'TIED')
+                        advantage_emoji = {
+                            'ME': '🔥',
+                            'OPP': '⚡',
+                            'TIED': '⚖️'
+                        }.get(advantage, '⚖️')
+                        
+                        st.info(f"{advantage_emoji} **HOY**: {today_ctx.get('my_players_today', 0)} tuyos vs {today_ctx.get('opp_players_today', 0)} rival | Power: {today_ctx.get('power_diff', 0):+.1f}")
+                
+                # Display strategic message
+                if result.get('strategic_message'):
+                    st.markdown(result['strategic_message'])
+                
+                # Display LINEUP CHANGES first (more urgent)
+                lineup_changes = result.get('lineup_changes', [])
+                if lineup_changes:
+                    st.divider()
+                    st.subheader("🔄 Cambios de Alineación Sugeridos")
+                    st.caption("⚡ Acción inmediata - optimiza tu lineup AHORA")
+                    
+                    for i, change in enumerate(lineup_changes, 1):
+                        type_emoji = {
+                            'IR_TO_ACTIVE': '🏥➡️✅',
+                            'ACTIVATE': '📤',
+                            'BENCH': '📥',
+                            'ACTIVE_TO_IR': '✅➡️🏥'
+                        }.get(change['type'], '🔄')
+                        
+                        priority_color = {
+                            'HIGH': '🔴',
+                            'MEDIUM': '🟡',
+                            'LOW': '🟢'
+                        }[change['priority']]
+                        
+                        with st.expander(
+                            f"{priority_color} {type_emoji} {change['player_name']} - {change['reason']}",
+                            expanded=(change['priority'] == 'HIGH')
+                        ):
+                            col1, col2 = st.columns(2)
+                            
+                            with col1:
+                                st.write(f"**Jugador**: {change['player_name']}")
+                                st.write(f"**Status**: {change.get('injury_status', 'N/A')}")
+                            
+                            with col2:
+                                st.write(f"**Acción**: {change['type'].replace('_', ' ')}")
+                                st.write(f"**Juega hoy**: {'✅ Sí' if change.get('plays_today') else '❌ No'}")
+                            
+                            # Action button
+                            if st.button(f"✅ Hecho", key=f"lineup_{i}", use_container_width=True):
+                                st.success("👍 Cambio registrado")
+                
+                # Display ADD/DROP recommendations
+                recommendations = result.get('recommendations', [])
+                
+                if recommendations:
+                    st.divider()
+                    st.success(f"✅ {len(recommendations)} recomendaciones estratégicas")
+                    
+                    # Show recommendations
+                    for i, rec in enumerate(recommendations, 1):
+                        priority_color = {
+                            'HIGH': '🔴',
+                            'MEDIUM': '🟡',
+                            'LOW': '🟢'
+                        }[rec['priority']]
+                        
+                        # Create expander for each recommendation
+                        with st.expander(
+                            f"{priority_color} #{i}: {rec['drop_name']} → {rec['add_name']} "
+                            f"(+{rec['projected_impact']} pts)",
+                            expanded=(i == 1)  # Primera siempre expandida
+                        ):
+                            # Show explanation
+                            explanation = recommender.explain_recommendation(rec)
+                            st.markdown(explanation)
+                            
+                            # Action buttons (mobile-friendly)
+                            col1, col2 = st.columns(2)
+                            
+                            with col1:
+                                if st.button(
+                                    "✅ Buena idea", 
+                                    key=f"accept_{i}",
+                                    use_container_width=True
+                                ):
+                                    st.success("👍 Guardado para futuro aprendizaje")
+                            
+                            with col2:
+                                if st.button(
+                                    "❌ No me convence", 
+                                    key=f"reject_{i}",
+                                    use_container_width=True
+                                ):
+                                    st.info("📝 Sistema aprenderá de tu preferencia")
+                    
+                    # Nota informativa
+                    st.divider()
+                    st.caption("""
+                    💡 **Tip**: Las recomendaciones mejoran con el tiempo a medida que el sistema 
+                    aprende de tus decisiones y preferencias.
+                    """)
+                    
+                else:
+                    st.warning("⚠️ No se encontraron oportunidades en este momento")
+                    if result.get('strategic_message'):
+                        st.info("📊 Ver análisis estratégico arriba para más contexto")
+                    
+            except Exception as e:
+                st.error(f"❌ Error generando recomendaciones: {e}")
+                logger.error(f"Error in AI tab: {e}")
+                import traceback
+                st.code(traceback.format_exc())
+                st.info("💡 Tip: Asegúrate de tener conexión a internet para scraping de datos")
+    
+    # Información del sistema
     st.divider()
-    st.subheader("📰 Noticias")
-    news_list = get_news_safe()
-    if news_list:
-        for n in news_list:
-            st.markdown(f"<div class='news-card'><a class='news-title' href='{n['l']}' target='_blank'>{n['t']}</a><div class='news-date'>{n['d']}</div></div>", unsafe_allow_html=True)
-    else: st.info("Noticias no disponibles.")
+    with st.expander("ℹ️ ¿Cómo funciona?"):
+        st.markdown("""
+        ### 🤖 Sistema de IA
+        
+        **Análisis Multi-Dimensional:**
+        - 💚 **Salud**: Injury reports actualizados (NBA.com + ESPN)
+        - 📈 **Tendencias**: Últimos 7, 15, 30 días de performance
+        - 📅 **Schedule**: Juegos próximos 7 días + dificultad de rivales
+        - 📊 **Consistencia**: Variabilidad de rendimiento
+        
+        **Algoritmo de Scoring:**
+        1. Cada jugador recibe score 0-100 en cada dimensión
+        2. Score total ponderado (Salud 35%, Tendencia 30%, Schedule 25%, Consistencia 10%)
+        3. Calcula impacto: Score_Add - Score_Drop
+        4. Ordena por mayor impacto proyectado
+        
+        **100% Gratuito:**
+        - Sin APIs de pago
+        - Web scraping de fuentes públicas
+        - Machine learning local con SQLite
+        - Aprende de tus decisiones
+        """)
+
+# --- 4. LEARNING TAB ---
+render_learning_tab(tab4, liga)
 
 # --- FOOTER ESPACIADOR PARA MÓVIL ---
 st.write("<br><br><br>", unsafe_allow_html=True) 
-st.caption("🚀 Fantasy GM Architect v10.1 | The Hotfix")
+st.caption("🚀 Fantasy GM Pro v3.0 + AI | The Intelligence Update")

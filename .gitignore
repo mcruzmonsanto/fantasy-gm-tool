@@ -39,6 +39,7 @@ env/
 
 # Credenciales (IMPORTANTE)
 config/credenciales.py
+.env
 
 # Logs
 *.log
