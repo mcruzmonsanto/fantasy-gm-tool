@@ -242,8 +242,8 @@ class PlayerAnalyzer:
                 if rank <= 100:
                     opportunities.append(f"📊 Expert rank #{rank} (Top 100)")
         
-        # NEW: Injury replacement opportunity
-        if injury_replacement['is_replacement']:
+        # NEW: Injury replacement opportunity (only if we know who)
+        if injury_replacement['is_replacement'] and injury_replacement.get('replacing'):
             opportunities.append(f"🩺 Injury replacement for {injury_replacement['replacing']}")
         
         return {
@@ -499,14 +499,22 @@ class PlayerAnalyzer:
             
             # If both conditions met, likely injury replacement
             if has_schedule_spike and (low_historical_rank or has_minutes_spike):
-                team = player.proTeam if hasattr(player, 'proTeam') else None
+                team = str(player.proTeam).upper() if hasattr(player, 'proTeam') else None
                 
                 if team and injuries:
-                    # Look for injured teammates
+                    # Look for injured teammates (need to normalize team comparison)
                     for injured_name, injury_data in injuries.items():
-                        injured_team = injury_data.get('team', '')
+                        injured_team = str(injury_data.get('team', '')).upper()
+                        injured_status = injury_data.get('status', '').upper()
                         
-                        if injured_team == team and injury_data.get('status') == 'OUT':
+                        # Match teams (handle abbreviations: DEN, Denver, etc.)
+                        teams_match = (
+                            injured_team == team or 
+                            team in injured_team or 
+                            injured_team in team
+                        )
+                        
+                        if teams_match and injured_status == 'OUT':
                             injury_type = injury_data.get('type', 'injury')
                             
                             timeline = self.injury_estimator.estimate_return('OUT', injury_type)
@@ -519,9 +527,10 @@ class PlayerAnalyzer:
                                 'timeline_message': self.injury_estimator.get_timeline_message('OUT', injury_type, injured_name)
                             }
                             
-                            logger.info(f"🩺 {player_name} identified as injury replacement for {injured_name}")
+                            logger.info(f"🩺 {player_name} identified as injury replacement for {injured_name} ({team})")
                             break
                 
+                # If we detected spike but couldn't identify who, still mark as temp opportunity
                 if not result['is_replacement'] and has_minutes_spike:
                     result['is_replacement'] = True
                     result['timeline_message'] = f"⚠️ {player_name} tiene minutos elevados recientes - posible oportunidad temporal"
