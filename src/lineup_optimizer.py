@@ -161,13 +161,17 @@ class LineupOptimizer:
         if player.proTeam not in today_games:
             return False
         
-        # Must not be injured
-        if hasattr(player, 'injuryStatus') and player.injuryStatus == 'OUT':
-            return False
+        # CRITICAL: Never activate suspended or injured players
+        if hasattr(player, 'injuryStatus'):
+            status = str(player.injuryStatus).upper()
+            # Check for OUT, SUSPENDED, SSPD
+            if status in ['OUT', 'SUSPENSION', 'SUSPENDED', 'SSPD'] or 'SUSPEND' in status:
+                return False
         
+        # Also check scraped injuries
         if player.name in injuries:
-            status = injuries[player.name].get('status', '')
-            if status in ['OUT', 'DOUBTFUL']:
+            status = injuries[player.name].get('status', '').upper()
+            if status in ['OUT', 'DOUBTFUL', 'SUSPENSION', 'SUSPENDED', 'SSPD'] or 'SUSPEND' in status:
                 return False
         
         return True
