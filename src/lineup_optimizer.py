@@ -48,13 +48,28 @@ class LineupOptimizer:
         for player in bench_players:
             if self._should_activate_from_bench(player, today_games, injuries):
                 priority = 'HIGH' if player.proTeam in today_games else 'MEDIUM'
+                
+                # Get injury status from scraped data OR ESPN
+                scraped_status = injuries.get(player.name, {}).get('status', None)
+                
+                # If not in scraped injuries, check ESPN injuryStatus
+                if not scraped_status and hasattr(player, 'injuryStatus'):
+                    espn_status = str(player.injuryStatus).upper()
+                    # Map ESPN statuses
+                    if espn_status in ['OUT', 'SUSPENSION', 'SUSPENDED', 'SSPD']:
+                        scraped_status = espn_status
+                    elif espn_status == 'DAY_TO_DAY':
+                        scraped_status = 'DTD'
+                
+                injury_status = scraped_status if scraped_status else 'HEALTHY'
+                
                 recommendations.append({
                     'type': 'ACTIVATE',
                     'priority': priority,
                     'player': player,
                     'player_name': player.name,
                     'reason': f"Juega HOY - activar para sumar stats",
-                    'injury_status': injuries.get(player.name, {}).get('status', 'HEALTHY'),
+                    'injury_status': injury_status,
                     'plays_today': True
                 })
         
@@ -63,13 +78,19 @@ class LineupOptimizer:
         for player in active_players:
             if self._should_bench_player(player, injuries, today_games):
                 priority = 'HIGH' if player.injuryStatus == 'OUT' else 'MEDIUM'
+                
+                # Get injury status (prefer scraped, fallback to ESPN)
+                injury_status = injuries.get(player.name, {}).get('status', None)
+                if not injury_status and hasattr(player, 'injuryStatus'):
+                    injury_status = str(player.injuryStatus)
+                
                 recommendations.append({
                     'type': 'BENCH',
                     'priority': priority,
                     'player': player,
                     'player_name': player.name,
                     'reason': self._get_bench_reason(player, injuries, today_games),
-                    'injury_status': injuries.get(player.name, {}).get('status', player.injuryStatus),
+                    'injury_status': injury_status if injury_status else 'UNKNOWN',
                     'plays_today': player.proTeam in today_games
                 })
         
