@@ -503,6 +503,15 @@ class PlayerAnalyzer:
                 team = str(player.proTeam).upper() if hasattr(player, 'proTeam') else None
                 logger.info(f"🔍 {player_name} passed criteria, team={team}, checking injuries...")
                 
+                # DEBUG: Special logging for Nnaji
+                if 'nnaji' in player_name.lower():
+                    logger.info(f"🚨 NNAJI DEBUG: team={team}, injuries has {len(injuries)} players")
+                    if 'Nikola Jokic' in injuries:
+                        jokic_data = injuries['Nikola Jokic']
+                        logger.info(f"🚨 JOKIC FOUND: team={jokic_data.get('team')}, status={jokic_data.get('status')}")
+                    else:
+                        logger.info(f"🚨 JOKIC NOT IN INJURIES DICT. Keys: {list(injuries.keys())[:10]}")
+                
                 if team and injuries:
                     logger.info(f"🔍 Injuries dict has {len(injuries)} players")
                     # Look for injured teammates (need to normalize team comparison)
