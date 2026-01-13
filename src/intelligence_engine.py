@@ -475,6 +475,7 @@ class PlayerAnalyzer:
             
             # Criterion 1: Schedule spike without historical value
             has_schedule_spike = schedule_score > 80
+            logger.info(f"🔍 Checking {player_name}: schedule={schedule_score}, spike={has_schedule_spike}")
             
             low_historical_rank = True
             if expert_data and player_name in expert_data:
@@ -500,8 +501,10 @@ class PlayerAnalyzer:
             # If both conditions met, likely injury replacement
             if has_schedule_spike and (low_historical_rank or has_minutes_spike):
                 team = str(player.proTeam).upper() if hasattr(player, 'proTeam') else None
+                logger.info(f"🔍 {player_name} passed criteria, team={team}, checking injuries...")
                 
                 if team and injuries:
+                    logger.info(f"🔍 Injuries dict has {len(injuries)} players")
                     # Look for injured teammates (need to normalize team comparison)
                     for injured_name, injury_data in injuries.items():
                         injured_team = str(injury_data.get('team', '')).upper()
@@ -513,6 +516,9 @@ class PlayerAnalyzer:
                             team in injured_team or 
                             injured_team in team
                         )
+                        
+                        if teams_match:
+                            logger.info(f"🔍 Found teammate {injured_name}: status={injured_status}, team={injured_team}")
                         
                         if teams_match and injured_status == 'OUT':
                             injury_type = injury_data.get('type', 'injury')
