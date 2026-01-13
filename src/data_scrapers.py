@@ -70,23 +70,64 @@ class InjuryReportScraper:
             if response.status_code == 200:
                 soup = BeautifulSoup(response.content, 'html.parser')
                 
-                # Parse ESPN injury table
+                # Parse ESPN injury table - each team has its own table
                 injury_tables = soup.find_all('table', class_='Table')
                 
+                current_team = None
                 for table in injury_tables:
+                    # Try to find team name from caption or previous heading
+                    parent = table.find_parent()
+                    if parent:
+                        # Look for team caption
+                        caption = parent.find_previous('div', class_='Table__Title')
+                        if caption:
+                            team_text = caption.get_text(strip=True)
+                            # Extract team abbreviation (e.g., "Denver Nuggets" -> "DEN")
+                            if 'Celtics' in team_text: current_team = 'BOS'
+                            elif 'Lakers' in team_text: current_team = 'LAL'
+                            elif 'Nuggets' in team_text: current_team = 'DEN'
+                            elif 'Bucks' in team_text: current_team = 'MIL'
+                            elif 'Warriors' in team_text: current_team = 'GSW'
+                            elif 'Heat' in team_text: current_team = 'MIA'
+                            elif 'Suns' in team_text: current_team = 'PHX'
+                            elif 'Thunder' in team_text: current_team = 'OKC'
+                            elif 'Clippers' in team_text: current_team = 'LAC'
+                            elif 'Timberwolves' in team_text: current_team = 'MIN'
+                            elif 'Cavaliers' in team_text: current_team = 'CLE'
+                            elif 'Knicks' in team_text: current_team = 'NYK'
+                            elif 'Pelicans' in team_text: current_team = 'NOP'
+                            elif 'Kings' in team_text: current_team = 'SAC'
+                            elif 'Mavericks' in team_text: current_team = 'DAL'
+                            elif 'Pacers' in team_text: current_team = 'IND'
+                            elif 'Spurs' in team_text: current_team = 'SAS'
+                            elif 'Hawks' in team_text: current_team = 'ATL'
+                            elif 'Bulls' in team_text: current_team = 'CHI'
+                            elif 'Nets' in team_text: current_team = 'BKN'
+                            elif 'Hornets' in team_text: current_team = 'CHA'
+                            elif 'Magic' in team_text: current_team = 'ORL'
+                            elif 'Pistons' in team_text: current_team = 'DET'
+                            elif 'Raptors' in team_text: current_team = 'TOR'
+                            elif 'Wizards' in team_text: current_team = 'WAS'
+                            elif 'Grizzlies' in team_text: current_team = 'MEM'
+                            elif 'Rockets' in team_text: current_team = 'HOU'
+                            elif 'Trail Blazers' in team_text or 'Blazers' in team_text: current_team = 'POR'
+                            elif '76ers' in team_text or 'Sixers' in team_text: current_team = 'PHI'
+                            elif 'Jazz' in team_text: current_team = 'UTA'
+                    
                     rows = table.find_all('tr')[1:]  # Skip header
                     
                     for row in rows:
                         cols = row.find_all('td')
                         if len(cols) >= 3:
                             player_name = cols[0].get_text(strip=True)
-                            injury_desc = cols[2].get_text(strip=True)
                             status = cols[1].get_text(strip=True).upper()
+                            injury_desc = cols[2].get_text(strip=True)
                             
                             injuries[player_name] = {
                                 'status': status,
                                 'injury': injury_desc,
-                                'team': '',
+                                'team': current_team if current_team else '',
+                                'type': injury_desc,  # Add type for injury estimator
                                 'last_update': datetime.now().strftime('%Y-%m-%d')
                             }
                 
