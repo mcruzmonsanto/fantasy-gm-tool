@@ -350,7 +350,27 @@ class SmartRecommender:
         explanation += f"""
 
 #### ✅ **FICHA: {rec['add_name']}**
-- 💚 Salud: {add_analysis['health_score']}/100
+"""
+        
+        # NEW: Check if injury replacement and add timeline warning
+        is_injury_repl = add_analysis.get('is_injury_replacement', False)
+        replacement_info = add_analysis.get('replacement_info', {})
+        
+        # Add badge to name if injury replacement  
+        if is_injury_repl:
+            explanation = explanation.replace(f"FICHA: {rec['add_name']}", f"FICHA: 🩺 {rec['add_name']}")
+            
+            # Add timeline warning after name
+            if replacement_info.get('timeline_message'):
+                explanation += f"""
+> **⏰ OPORTUNIDAD TEMPORAL**  
+> {replacement_info['timeline_message']}  
+> **Relevancia estimada:** {replacement_info.get('estimated_return', 'Revisa actualizaciones')}  
+> **Recomendación:** Úsalo esta semana, prepara reemplazo
+
+"""
+        
+        explanation += f"""- 💚 Salud: {add_analysis['health_score']}/100
 - 📈 Tendencia: {add_analysis['trend_score']:+.0f}
 - 📅 Schedule: {add_analysis['schedule_score']}/100
 - 📊 Score Total: **{add_analysis['total_score']}/100**

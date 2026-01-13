@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Tuple
 import logging
 import numpy as np
+from src.injury_timeline_estimator import InjuryTimelineEstimator
 
 logger = logging.getLogger(__name__)
 
@@ -12,6 +13,7 @@ class PlayerAnalyzer:
     
     def __init__(self, db_path='data/fantasy_brain.db'):
         self.db_path = db_path
+        self.injury_estimator = InjuryTimelineEstimator()
         self._init_db()
     
     def _init_db(self):
@@ -205,6 +207,9 @@ class PlayerAnalyzer:
         # NEW: Expert score
         expert_score = self._calculate_expert_score(player_name, expert_data)
         
+        # NEW: Detect injury replacement status
+        injury_replacement = self._detect_injury_replacement(player, injuries, expert_data, schedule_score)
+        
         # Weighted total score WITH EXPERT DATA
         total_score = (
             health_score * 0.30 +  # Health still critical
@@ -237,6 +242,10 @@ class PlayerAnalyzer:
                 if rank <= 100:
                     opportunities.append(f"📊 Expert rank #{rank} (Top 100)")
         
+        # NEW: Injury replacement opportunity
+        if injury_replacement['is_replacement']:
+            opportunities.append(f"🩺 Injury replacement for {injury_replacement['replacing']}")
+        
         return {
             'player_name': player_name,
             'health_score': round(health_score, 1),
@@ -246,7 +255,9 @@ class PlayerAnalyzer:
             'expert_score': round(expert_score, 1),  # NEW
             'total_score': round(total_score, 1),
             'issues': issues,
-            'opportunities': opportunities
+            'opportunities': opportunities,
+            'is_injury_replacement': injury_replacement['is_replacement'],  # NEW
+            'replacement_info': injury_replacement  # NEW
         }
     
     def _calculate_expert_score(self, player_name: str, expert_data: dict = None) -> float:
@@ -437,6 +448,88 @@ class PlayerAnalyzer:
         except Exception as e:
             logger.debug(f"Could not calculate consistency for {player.name}: {e}")
             return 50.0
+    
+    def _detect_injury_replacement(self, player, injuries: dict, expert_data: dict = None, schedule_score: float = 0) -> dict:
+        """
+        Detects if a player is an 'injury replacement' (temporary opportunity)
+        
+        Returns:
+            {
+                'is_replacement': bool,
+                'replacing': str | None,
+                'injury_type': str,
+                'estimated_return': str,
+                'timeline_message': str
+            }
+        """
+        result = {
+            'is_replacement': False,
+            'replacing': None,
+            'injury_type': '',
+            'estimated_return': '',
+            'timeline_message': ''
+        }
+        
+        try:
+            player_name = player.name
+            
+            # Criterion 1: Schedule spike without historical value
+            has_schedule_spike = schedule_score > 80
+            
+            low_historical_rank = True
+            if expert_data and player_name in expert_data:
+                rank = expert_data[player_name].get('fantasypros_rank', 999)
+                if rank <= 150:
+                    low_historical_rank = False
+            
+            # Criterion 2: Minutes spike in last 7 games
+            has_minutes_spike = False
+            try:
+                stats_7 = player.stats.get('2026_last_7', {}).get('avg', {})
+                stats_total = player.stats.get('2026_total', {}).get('avg', {})
+                
+                mpg_7 = stats_7.get('MIN', 0)
+                mpg_season = stats_total.get('MIN', 0)
+                
+                if mpg_season > 0 and mpg_7 > mpg_season * 1.3:  # 30%+ increase
+                    has_minutes_spike = True
+                    logger.info(f"📈 {player_name}: Minutes spike {mpg_season:.1f} → {mpg_7:.1f}")
+            except:
+                pass
+            
+            # If both conditions met, likely injury replacement
+            if has_schedule_spike and (low_historical_rank or has_minutes_spike):
+                team = player.proTeam if hasattr(player, 'proTeam') else None
+                
+                if team and injuries:
+                    # Look for injured teammates
+                    for injured_name, injury_data in injuries.items():
+                        injured_team = injury_data.get('team', '')
+                        
+                        if injured_team == team and injury_data.get('status') == 'OUT':
+                            injury_type = injury_data.get('type', 'injury')
+                            
+                            timeline = self.injury_estimator.estimate_return('OUT', injury_type)
+                            
+                            result = {
+                                'is_replacement': True,
+                                'replacing': injured_name,
+                                'injury_type': injury_type,
+                                'estimated_return': timeline['description'],
+                                'timeline_message': self.injury_estimator.get_timeline_message('OUT', injury_type, injured_name)
+                            }
+                            
+                            logger.info(f"🩺 {player_name} identified as injury replacement for {injured_name}")
+                            break
+                
+                if not result['is_replacement'] and has_minutes_spike:
+                    result['is_replacement'] = True
+                    result['timeline_message'] = f"⚠️ {player_name} tiene minutos elevados recientes - posible oportunidad temporal"
+            
+        except Exception as e:
+            logger.debug(f"Error detecting injury replacement for {player.name}: {e}")
+        
+        return result
 
     def compare_rosters_expert_strength(self, roster_a: list, roster_b: list, expert_data: dict) -> dict:
         """
