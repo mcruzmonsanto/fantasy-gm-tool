@@ -1,19 +1,8 @@
-[theme]
-primaryColor = "#E50914"
-backgroundColor = "#121212"
-secondaryBackgroundColor = "#1E1E1E"
-textColor = "#E0E0E0"
-font = "sans serif"
+# Streamlit Cloud Configuration
+# This file tells Streamlit Cloud which Python version to use
 
 [server]
 headless = true
-port = 8501
-enableCORS = false
-enableXsrfProtection = true
 
-[browser]
-gatherUsageStats = false
-
-[runner]
-magicEnabled = true
-fastReruns = true
+[python]
+version = "3.11"
