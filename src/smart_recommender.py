@@ -125,18 +125,22 @@ class SmartRecommender:
                 expert_data=expert_data,
                 today_games=list(today_games),  # NEW: Pass today's teams
                 is_week_start=acq_budget.get('is_week_start', False),  # NEW: Week start flag
+                league=self.league,  # NEW: Pass league for waiver checking
                 top_n=5
             )
             
             # 6. FILTER by strategic context
-            filtered_recs = self._filter_by_strategy(
+            strategic_recs = self._filter_by_strategy(
                 recommendations, 
                 playoff_ctx, 
                 matchup_state, 
                 today_analysis
             )
             
-            logger.info(f"✅ Generated {len(filtered_recs)} STRATEGIC recommendations")
+            # 🔥 NEW: Filter by user history
+            filtered_recs = self._filter_by_user_history(strategic_recs)
+            
+            logger.info(f"✅ Generated {len(filtered_recs)} STRATEGIC recommendations (after all filters)")
             
             # 7. LINEUP OPTIMIZATION (check bench/IR)
             lineup_recs = self.lineup_optimizer.get_lineup_recommendations(
@@ -254,6 +258,38 @@ class SmartRecommender:
             return filtered if filtered else recommendations[:3]
         
         return recommendations
+    
+    def _filter_by_user_history(self, recommendations: list) -> list:
+        """
+        Filtra recomendaciones basándose en feedback pasado del usuario
+        
+        Evita mostrar:
+        - Combinaciones exactas que el usuario rechazó antes
+        - Jugadores que el usuario rechazó soltar múltiples veces
+        
+        Args:
+            recommendations: Lista de recomendaciones
+        
+        Returns:
+            Lista filtrada de recomendaciones
+        """
+        try:
+            from src.user_feedback_tracker import UserFeedbackTracker
+            tracker = UserFeedbackTracker()
+            
+            filtered = []
+            for rec in recommendations:
+                # Verificar si usuario rechazó algo similar antes
+                if tracker.should_show_recommendation(rec):
+                    filtered.append(rec)
+                else:
+                    logger.info(f"🚫 Skipping {rec['add_name']} for {rec['drop_name']} - user rejected similar before")
+            
+            return filtered
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Could not filter by user history: {e}")
+            return recommendations  # Si falla, devolver todas
     
     def _generate_strategic_message(self, playoff_ctx, matchup_state, acq_budget, today_analysis):
         """Generate strategic guidance message"""

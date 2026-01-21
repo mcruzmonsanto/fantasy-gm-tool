@@ -2,11 +2,12 @@
 import sqlite3
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple
-import logging
+import logging  # Keep for typing if needed, but use loguru for logger
+from loguru import logger
 import numpy as np
 from src.injury_timeline_estimator import InjuryTimelineEstimator
 
-logger = logging.getLogger(__name__)
+# logger = logging.getLogger(__name__)
 
 class PlayerAnalyzer:
     """Analyzes individual player performance, health, and value"""
@@ -318,7 +319,7 @@ class PlayerAnalyzer:
                 logger.info(f"⚠️ SUSPENDED DETECTED via ESPN: {player_name} (status={status})")
                 return 0.0  # Suspended - definitivamente no juega
             elif status == 'DAY_TO_DAY':
-                return 60.0
+                return 80.0  # DTD es común, no penalizar tanto
         
         return 100.0
     
@@ -637,7 +638,8 @@ class RosterOptimizer:
         expert_data: dict = None,
         top_n: int = 5,
         today_games: list = None,  # NEW: Teams playing today
-        is_week_start: bool = False  # NEW: Week start flag
+        is_week_start: bool = False,  # NEW: Week start flag
+        league = None  # NEW: League object for accessing activity
     ) -> List[dict]:
         """
         Finds the best add/drop moves WITH EXPERT DATA + TODAY PROTECTION
@@ -663,12 +665,33 @@ class RosterOptimizer:
         available_scores = {}
         waiver_skipped = 0
         
+        # Get waiver blacklist from recent activity
+        waiver_blacklist = set()
+        if league:
+            waiver_blacklist = self._get_waiver_players(league)
+            if waiver_blacklist:
+                logger.info(f"📋 Found {len(waiver_blacklist)} players on waiver blacklist (recent drops)")
+        
         for player in available_players[:100]:  # Top 100 available
             # Skip players on WAIVER (only Free Agents)
             if hasattr(player, 'onTeamId'):
                 if player.onTeamId != 0:
                     waiver_skipped += 1
-                    logger.debug(f"⏭️ Skipping {player.name} - on waiver (onTeamId={player.onTeamId})")
+                    logger.debug(f"⏭️ Skipping {player.name} - on team (onTeamId={player.onTeamId})")
+                    continue
+            
+            # 🔥 NEW: Check recent drops (Waiver Status)
+            if player.name in waiver_blacklist:
+                waiver_skipped += 1
+                logger.info(f"⏭️ Skipping {player.name} - RECENT DROP (Waiver)")
+                continue
+            
+            # 🔥 NEW: Check acquisition status (FREEAGENT vs WAIVERS)
+            if hasattr(player, 'status'):
+                status = str(player.status).upper()
+                if status == 'WAIVERS' or status == 'CLAIM':
+                    waiver_skipped += 1
+                    logger.debug(f"⏭️ Skipping {player.name} - status is {status}")
                     continue
             
             analysis = self.analyzer.analyze_player(
@@ -680,50 +703,25 @@ class RosterOptimizer:
             logger.info(f"⏭️ Filtered {waiver_skipped} waiver players - only showing Free Agents")
         
         # Find drop candidates (lowest scores)
-        # 🔥 NEW: PROTECT players playing TODAY (especially at week start)
-        all_roster_sorted = sorted(
-            roster_scores.items(),
-            key=lambda x: x[1]['total_score']
+        # Attempt 1: Strict Filtering (Protect Today + Undroppable)
+        drop_candidates = self._find_drop_candidates(
+            roster_scores, my_roster, today_games, is_week_start, mode='STRICT'
         )
         
-        drop_candidates = []
-        protected_count = 0
-        
-        for player_name, analysis in all_roster_sorted:
-            if len(drop_candidates) >= 10:
-                break
-                
-            # Find player object
-            player_obj = next((p for p in my_roster if p.name == player_name), None)
-            if not player_obj:
-                continue
+        # Attempt 2: Relaxed Filtering if no candidates found
+        if not drop_candidates:
+            logger.warning("⚠️ No drop candidates found with strict filters. Relaxing criteria...")
+            drop_candidates = self._find_drop_candidates(
+                roster_scores, my_roster, today_games, is_week_start, mode='RELAXED'
+            )
             
-            # CRITICAL: Protect players playing TODAY
-            if today_games and hasattr(player_obj, 'proTeam'):
-                # Normalize team name
-                team = str(player_obj.proTeam).upper()
-                
-                # Check if team plays today (need to normalize comparison)
-                plays_today = any(team in str(t).upper() or str(t).upper() in team 
-                                 for t in today_games)
-                
-                if plays_today:
-                    if is_week_start:
-                        # Week start: NEVER drop players playing today
-                        logger.info(f"🛡️ Protecting {player_name} - plays TODAY at week start")
-                        protected_count += 1
-                        continue
-                    elif analysis['total_score'] >= 20:
-                        # Mid-week: Only drop if score is really bad
-                        logger.info(f"🛡️ Protecting {player_name} - plays TODAY (score {analysis['total_score']:.1f})")
-                        protected_count += 1
-                        continue
+        # Attempt 3: DESPERATION Mode (Ignore "Plays Today")
+        if not drop_candidates:
+            logger.warning("⚠️ No drop candidates found even in RELAXED mode. Enabling DESPERATION mode...")
+            drop_candidates = self._find_drop_candidates(
+                roster_scores, my_roster, today_games, is_week_start, mode='DESPERATION'
+            )
             
-            drop_candidates.append((player_name, analysis))
-        
-        if protected_count > 0:
-            logger.info(f"🛡️ Protected {protected_count} players who play today from being dropped")
-        
         # Find add candidates (highest scores)
         add_candidates = sorted(
             available_scores.items(),
@@ -731,7 +729,18 @@ class RosterOptimizer:
             reverse=True
         )[:20]  # Best 20 available
         
+        logger.info(f"🧐 Pipeline Status: {len(drop_candidates)} drop candidates, {len(add_candidates)} add candidates")
+        
+        if not drop_candidates:
+            logger.warning("❌ No drop candidates found in any mode.")
+            return []
+            
+        if not add_candidates:
+            logger.warning("❌ No add candidates found.")
+            return []
+
         # Generate recommendations
+        recs_count = 0
         for drop_name, drop_analysis in drop_candidates:
             for add_name, add_analysis in add_candidates:
                 
@@ -746,6 +755,18 @@ class RosterOptimizer:
                     add_player = next((p for p in available_players if p.name == add_name), None)
                     
                     if drop_player and add_player:
+                        # Validate sanity
+                        validation = self._validate_recommendation_sanity(
+                            drop_player, add_player,
+                            drop_analysis, add_analysis,
+                            expert_data
+                        )
+                        
+                        if not validation['valid']:
+                            # logger.info(f"🚫 Filtered ({drop_name}->{add_name}): {validation['reason']}")
+                            continue  # Skip esta recomendación
+                        
+                        recs_count += 1
                         recommendations.append({
                             'priority': self._get_priority(impact),
                             'action': 'ADD_DROP',
@@ -758,11 +779,252 @@ class RosterOptimizer:
                             'projected_impact': round(impact, 1),
                             'confidence': self._calculate_confidence(drop_analysis, add_analysis)
                         })
+                else:
+                    pass
+                    # logger.debug(f"📉 Low impact ({impact:.1f}): {drop_name} -> {add_name}")
+        
+        logger.info(f"✅ Generated {recs_count} raw recommendations before final sorting")
         
         # Sort by impact and return top N
         recommendations.sort(key=lambda x: x['projected_impact'], reverse=True)
         
         return recommendations[:top_n]
+        
+
+    def _get_waiver_players(self, league, lookback_days=2) -> set:
+        """
+        Identify players dropped in the last X days via League Activity
+        """
+        waiver_players = set()
+        try:
+            # Fetch recent activity (50 should cover 2-3 days)
+            activity = league.recent_activity(size=50)
+            
+            # Calculate cutoff date
+            cutoff_date = datetime.now() - timedelta(days=lookback_days)
+            
+            for act in activity:
+                # Check date (act.date is usually in milliseconds for ESPN API)
+                try:
+                    # Handle both seconds and milliseconds just in case
+                    timestamp = act.date
+                    if timestamp > 10000000000: # It's milliseconds
+                        timestamp = timestamp / 1000.0
+                    
+                    act_date = datetime.fromtimestamp(timestamp)
+                    
+                    if act_date < cutoff_date:
+                        continue # Too old
+                        
+                    # Check for DROP actions
+                    if hasattr(act, 'actions'):
+                        for team, action_type, player_name, bid in act.actions:
+                            if action_type == 'DROPPED':
+                                waiver_players.add(player_name)
+                                
+                except Exception as e:
+                    continue # Skip invalid dates
+                    
+        except Exception as e:
+            logger.error(f"❌ Error checking waivers: {e}")
+            
+        return waiver_players
+
+    def _find_drop_candidates(self, roster_scores, my_roster, today_games, is_week_start, mode='STRICT'):
+        """
+        Helper to find drop candidates with configurable mode
+        Modes: STRICT, RELAXED, DESPERATION
+        """
+        all_roster_sorted = sorted(
+            roster_scores.items(),
+            key=lambda x: x[1]['total_score']
+        )
+        
+        candidates = []
+        protected_count = 0
+        
+        for player_name, analysis in all_roster_sorted:
+            if len(candidates) >= 10:
+                break
+                
+            # Find player object
+            player_obj = next((p for p in my_roster if p.name == player_name), None)
+            if not player_obj:
+                continue
+            
+            # 1. Protect players playing TODAY
+            # Skipped completely in DESPERATION mode
+            if mode != 'DESPERATION' and today_games and hasattr(player_obj, 'proTeam'):
+                team = str(player_obj.proTeam).upper()
+                plays_today = any(team in str(t).upper() or str(t).upper() in team for t in today_games)
+                
+                if plays_today:
+                    if is_week_start:
+                        if mode == 'STRICT':
+                            logger.info(f"🛡️ Protecting {player_name} - plays TODAY (Strict)")
+                            continue
+                            
+                    # Score Threshold Check
+                    score = analysis['total_score']
+                    
+                    if mode == 'STRICT':
+                        if score >= 20: continue # Strict: Protect almost everyone
+                    elif mode == 'RELAXED':
+                        if score >= 80: continue # Relaxed: Only protect STARS (80+)
+                        
+                    # If we are here, player plays today but score is low enough to drop
+                    logger.info(f"⚠️ Considering {player_name} despite playing today (Score {score:.1f})")
+
+            
+            # 2. Undroppable Check (Crowd Wisdom + Stats)
+            # Apply in ALL modes (never drop stars)
+            is_undroppable = False
+            
+            # Check Position Rank (Best indicator)
+            if hasattr(player_obj, 'posRank'):
+                # Strict: Top 25
+                # Relaxed/Desperation: Top 15 (Only very best protected)
+                threshold = 25 if mode == 'STRICT' else 15
+                
+                if player_obj.posRank > 0 and player_obj.posRank <= threshold:
+                    is_undroppable = True
+                    logger.info(f"🛡️ UNDROPPABLE: {player_name} (PosRank #{player_obj.posRank})")
+            
+            # Check Avg Stats (PTS) - as fallback
+            if not is_undroppable:
+                try:
+                    stats = player_obj.stats.get('2026_total', {}).get('avg', {})
+                    avg_pts = stats.get('PTS', 0)
+                    
+                    # Strict: 18+ PPG 
+                    # Relaxed/Desperation: 25+ PPG
+                    threshold_pts = 18.0 if mode == 'STRICT' else 25.0
+                    
+                    if avg_pts >= threshold_pts:
+                        is_undroppable = True
+                        logger.info(f"🛡️ UNDROPPABLE: {player_name} (Avg {avg_pts:.1f} PTS)")
+                except:
+                    pass
+            
+            if is_undroppable:
+                continue
+                
+            candidates.append((player_name, analysis))
+            
+        return candidates
+    
+    def _validate_recommendation_sanity(
+        self,
+        drop_player,
+        add_player,
+        drop_analysis: dict,
+        add_analysis: dict,
+        expert_data: dict = None
+    ) -> dict:
+        """
+        Valida que la recomendación no sea ilógica
+        
+        Protege contra:
+        - Soltar Top 50/100 por jugadores fuera del radar
+        - Soltar starters (30+ MPG) por bench warmers (15- MPG)
+        - Soltar jugadores productivos (20+ PPG) por novatos (5- PPG)
+        
+        Args:
+            drop_player: Player object a soltar
+            add_player: Player object a fichar
+            drop_analysis: Análisis del jugador a soltar
+            add_analysis: Análisis del jugador a fichar
+            expert_data: Rankings de expertos
+        
+        Returns:
+            {'valid': bool, 'reason': str}
+        """
+        try:
+            # RULE 1: Expert Rank Protection
+            if expert_data:
+                drop_rank = expert_data.get(drop_player.name, {}).get('fantasypros_rank', 999)
+                add_rank = expert_data.get(add_player.name, {}).get('fantasypros_rank', 999)
+                
+                # NO soltar Top 50 por fuera de Top 150
+                if drop_rank <= 50 and add_rank > 150:
+                    return {
+                        'valid': False,
+                        'reason': f"❌ {drop_player.name} es Top {drop_rank} - NO soltar por #{add_rank}"
+                    }
+                
+                # NO soltar Top 100 por fuera de Top 200 (a menos que esté OUT)
+                if drop_rank <= 100 and add_rank > 200:
+                    if drop_analysis['health_score'] > 20:  # Si no está OUT
+                        return {
+                            'valid': False,
+                            'reason': f"⚠️ {drop_player.name} (Top {drop_rank}) muy superior a {add_player.name} (#{add_rank})"
+                        }
+            
+            # RULE 2: Stats Gap Protection (últimos 15 juegos)
+            try:
+                drop_stats = drop_player.stats.get('2026_last_15', {}).get('avg', {})
+                add_stats = add_player.stats.get('2026_last_15', {}).get('avg', {})
+                
+                drop_ppg = drop_stats.get('PTS', 0)
+                add_ppg = add_stats.get('PTS', 0)
+                
+                # NO soltar 20+ PPG por 5- PPG (a menos que esté OUT o muy lesionado)
+                if drop_ppg >= 20 and add_ppg < 5:
+                    if drop_analysis['health_score'] > 30:
+                        return {
+                            'valid': False,
+                            'reason': f"🚫 {drop_player.name} ({drop_ppg:.1f} PPG) vs {add_player.name} ({add_ppg:.1f} PPG) - gap enorme"
+                        }
+                
+                # Gap moderado: 15+ PPG vs 8- PPG
+                if drop_ppg >= 15 and add_ppg < 8:
+                    if drop_analysis['health_score'] > 50:
+                        # Solo advertencia, pero permitir si health_score es muy malo
+                        logger.warning(f"⚠️ Considerando soltar {drop_player.name} ({drop_ppg:.1f} PPG) por {add_player.name} ({add_ppg:.1f} PPG)")
+            
+            except Exception as e:
+                logger.debug(f"Could not check stats gap: {e}")
+            
+            # RULE 3: Minutes Protection
+            try:
+                drop_stats = drop_player.stats.get('2026_last_15', {}).get('avg', {})
+                add_stats = add_player.stats.get('2026_last_15', {}).get('avg', {})
+                
+                drop_mpg = drop_stats.get('MIN', 0)
+                add_mpg = add_stats.get('MIN', 0)
+                
+                # NO soltar starter (30+ min) por bench (15- min) si está sano
+                if drop_mpg >= 30 and add_mpg < 15:
+                    if drop_analysis['health_score'] > 50:  # Si no está muy lesionado
+                        return {
+                            'valid': False,
+                            'reason': f"⚠️ {drop_player.name} es starter ({drop_mpg:.0f} MPG) - {add_player.name} es bench ({add_mpg:.0f} MPG)"
+                        }
+                
+                # Starter vs rotación: 28+ vs 20-
+                if drop_mpg >= 28 and add_mpg < 20:
+                    if drop_analysis['health_score'] > 60:
+                        logger.warning(f"⚠️ Considerando soltar starter {drop_player.name} ({drop_mpg:.0f} MPG) por rotación {add_player.name} ({add_mpg:.0f} MPG)")
+            
+            except Exception as e:
+                logger.debug(f"Could not check minutes gap: {e}")
+            
+            # RULE 4: Consistency Check
+            # No soltar jugador muy consistente (80+) por muy inconsistente (30-)
+            if drop_analysis['consistency_score'] >= 80 and add_analysis['consistency_score'] < 30:
+                if drop_analysis['health_score'] > 40:
+                    return {
+                        'valid': False,
+                        'reason': f"⚠️ {drop_player.name} es muy consistente ({drop_analysis['consistency_score']}) - {add_player.name} es volátil ({add_analysis['consistency_score']})"
+                    }
+            
+            # Si llegamos aquí, la recomendación es válida
+            return {'valid': True, 'reason': ''}
+            
+        except Exception as e:
+            logger.error(f"Error validating recommendation: {e}")
+            # En caso de error, PERMITIR la recomendación (conservador)
+            return {'valid': True, 'reason': ''}
     
     def _get_priority(self, impact: float) -> str:
         """Determine priority level"""

@@ -31,6 +31,7 @@ from src.expert_scrapers import ExpertScrapers
 from src.historical_analyzer import HistoricalAnalyzer
 from src.ml_engine import MLDecisionEngine
 from src.ui_learning_tab import render_learning_tab
+from src.game_timing_analyzer import format_time
 
 # Intentar cargar configuración moderna, fallback a legacy
 try:
@@ -580,7 +581,7 @@ with st.sidebar:
     st.markdown("---")
     limit_slots = st.number_input("Titulares Máximos", 5, 20, 10)
     excluir_out = st.checkbox("Ignorar 'OUT' en Grid", True)
-    if st.button("🔄 Refrescar Datos", type="primary"): 
+    if st.button("🔄 Refrescar Datos", type="primary", key="refresh_data_btn"): 
         st.cache_data.clear()
         if cache_mgr:
             cache_mgr.cache_metadata.clear()
@@ -1002,7 +1003,7 @@ with tab3:
     """)
     
     # Botón para generar recomendaciones
-    if st.button("🔮 Analizar y Recomendar", type="primary", use_container_width=True):
+    if st.button("🔮 Analizar y Recomendar", type="primary", use_container_width=True, key="analyze_recommend_btn"):
         with st.spinner("🔍 Analizando estrategia, jugadores, lesiones, schedules..."):
             try:
                 # Import recommender
@@ -1158,7 +1159,7 @@ with tab3:
                                 st.write(f"**Juega hoy**: {'✅ Sí' if change.get('plays_today') else '❌ No'}")
                             
                             # Action button
-                            if st.button(f"✅ Hecho", key=f"lineup_{i}", use_container_width=True):
+                            if st.button(f"✅ Hecho", key=f"ai_lineup_change_{i}", use_container_width=True):
                                 st.success("👍 Cambio registrado")
                 
                 # Display ADD/DROP recommendations
@@ -1169,7 +1170,7 @@ with tab3:
                     st.success(f"✅ {len(recommendations)} recomendaciones estratégicas")
                     
                     # Show recommendations
-                    for i, rec in enumerate(recommendations, 1):
+                    for rec_idx, rec in enumerate(recommendations, 1):
                         priority_color = {
                             'HIGH': '🔴',
                             'MEDIUM': '🟡',
@@ -1178,9 +1179,9 @@ with tab3:
                         
                         # Create expander for each recommendation
                         with st.expander(
-                            f"{priority_color} #{i}: {rec['drop_name']} → {rec['add_name']} "
+                            f"{priority_color} #{rec_idx}: {rec['drop_name']} → {rec['add_name']} "
                             f"(+{rec['projected_impact']} pts)",
-                            expanded=(i == 1)  # Primera siempre expandida
+                            expanded=(rec_idx == 1)  # Primera siempre expandida
                         ):
                             # Show explanation
                             explanation = recommender.explain_recommendation(rec)
@@ -1192,18 +1193,28 @@ with tab3:
                             with col1:
                                 if st.button(
                                     "✅ Buena idea", 
-                                    key=f"accept_{i}",
+                                    key=f"ai_rec_accept_{rec_idx}",
                                     use_container_width=True
                                 ):
-                                    st.success("👍 Guardado para futuro aprendizaje")
+                                    # 🔥 NEW: Guardar feedback en BD
+                                    from src.user_feedback_tracker import UserFeedbackTracker
+                                    tracker = UserFeedbackTracker()
+                                    tracker.save_user_feedback(rec, 'ACCEPTED', league_id=nombre_liga)
+                                    st.success("✅ Guardado - IA aprenderá de esto")
+                                    st.rerun()
                             
                             with col2:
                                 if st.button(
                                     "❌ No me convence", 
-                                    key=f"reject_{i}",
+                                    key=f"ai_rec_reject_{rec_idx}",
                                     use_container_width=True
                                 ):
-                                    st.info("📝 Sistema aprenderá de tu preferencia")
+                                    # 🔥 NEW: Guardar rechazo en BD
+                                    from src.user_feedback_tracker import UserFeedbackTracker
+                                    tracker = UserFeedbackTracker()
+                                    tracker.save_user_feedback(rec, 'REJECTED', league_id=nombre_liga)
+                                    st.warning("❌ IA evitará recomendaciones similares")
+                                    st.rerun()
                     
                     # Nota informativa
                     st.divider()
@@ -1211,11 +1222,63 @@ with tab3:
                     💡 **Tip**: Las recomendaciones mejoran con el tiempo a medida que el sistema 
                     aprende de tus decisiones y preferencias.
                     """)
+                
+                # 🔥 NUEVO: Análisis Estratégico Narrativo
+                st.divider()
+                st.subheader("🧠 Análisis Estratégico de Hoy")
+                st.caption("Análisis tipo experto humano: riesgos, oportunidades y jugadas maestras")
+                
+                with st.spinner("Generando análisis estratégico..."):
+                    try:
+                        from src.strategic_narrator import generate_strategic_analysis
+                        
+                        # Get today's schedule from calendario
+                        calendario = get_calendario_semanal()
+                        hoy_key = datetime.now(TIMEZONE).strftime("%a %d")
+                        today_schedule = calendario.get(hoy_key, [])
+                        
+                        # Get matchup state (from result if available)
+                        matchup_state = result.get('context', {}).get('matchup', {})
+                        acq_budget = result.get('context', {}).get('acquisitions', {})
+                        
+                        # Get free agents for streaming suggestions
+                        free_agents = liga.free_agents(size=100)
+                        
+                        # Generate analysis
+                        analysis = generate_strategic_analysis(
+                            mi_equipo, rival, matchup,
+                            equipos_hoy, today_schedule,
+                            config['categorias'],
+                            matchup_state, acq_budget, free_agents
+                        )
+                        
+                        # Mostrar narrativa completa
+                        st.markdown(analysis['narrative'])
+                        
+                        # Expandibles con detalles
+                        if analysis.get('red_flags'):
+                            with st.expander(f"🚨 Ver detalles de {len(analysis['red_flags'])} riesgos detectados"):
+                                for idx, flag in enumerate(analysis['red_flags']):
+                                    st.warning(f"**{flag['player']}**: {flag['status']} - Juega a las {format_time(flag['game_time'])}")
+                        
+                        if analysis.get('wasted_util'):
+                            with st.expander(f"⚠️ Ver {analysis['wasted_util']['wasted_slots']} jugadores UTIL inactivos"):
+                                st.info(f"Jugadores: {', '.join(analysis['wasted_util']['players'])}")
+                                st.caption("💡 Considera streaming para maximizar volumen")
+                        
+                        if analysis.get('streaming_play', {}).get('step_b'):
+                            with st.expander("🎯 Ver candidatos de streaming recomendados"):
+                                targets = analysis['streaming_play']['step_b']
+                                if targets:
+                                    import pandas as pd
+                                    df = pd.DataFrame(targets)
+                                    st.dataframe(df, use_container_width=True, hide_index=True)
+                                else:
+                                    st.info("No hay targets óptimos en este momento")
                     
-                else:
-                    st.warning("⚠️ No se encontraron oportunidades en este momento")
-                    if result.get('strategic_message'):
-                        st.info("📊 Ver análisis estratégico arriba para más contexto")
+                    except Exception as e:
+                        logger.error(f"Error generating strategic analysis: {e}")
+                        st.warning(f"⚠️ Análisis narrativo no disponible: {e}")
                     
             except Exception as e:
                 st.error(f"❌ Error generando recomendaciones: {e}")
